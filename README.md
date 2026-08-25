@@ -71,6 +71,8 @@ curl -X 'POST' \
   -d '{
   "features": [1.0, 2.0, 3.0]
 }'
+
+
 📂 Project Architecture
 
 mlops-practitioner/
