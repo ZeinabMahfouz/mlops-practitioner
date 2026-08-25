@@ -9,7 +9,8 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
-    "pydantic-settings"
+    "pydantic-settings",
+    "onnxruntime"
 ]
 
 [project.optional-dependencies]
