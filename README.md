@@ -28,7 +28,6 @@ curl http://localhost:8000/health
 🌐 Interactive Documentation: Visit http://localhost:8000/docs in your browser to test endpoints via Swagger UI.
 
 🛠️ Local Development Setup
-
 If you want to modify code, run training pipelines, or execute tests locally:
 
 1️⃣ Environment Setup
@@ -39,20 +38,24 @@ pip install --upgrade pip
 pip install -e ".[dev]"
 
 2️⃣ Model Training & ONNX Export
-
 Train the Ridge regression baseline model and generate both .pkl and .onnx artifacts:
+
 python -m prodml.train
 
 3️⃣ Run Local API Server
 
 uvicorn prodml.api.app:app --host 0.0.0.0 --port 8000 --reload
 
-🧪 Testing & Code QualityMaintain code reliability, linting, and coverage standards with these commands:
-Run Test Suite & Coverage Report (Target $\ge 70\%$, Achieved $90\%$):
-    pytest --cov=src/prodml tests/
-Code Quality & Linting:
-    ruff check src/
+🧪 Testing & Code Quality
+Maintain code reliability, linting, and coverage standards with these commands:
 
+Run Test Suite & Coverage Report:
+
+pytest --cov=src/prodml tests/
+
+Code Quality & Linting:
+
+ruff check src/
 📡 API Endpoints & Usage
 
 | Method | Endpoint | Description |
@@ -87,10 +90,10 @@ mlops-practitioner/
 │       ├── api/            # FastAPI initialization, routing, and Pydantic schemas
 │       ├── config.py       # Configuration and paths management
 │       ├── data.py         # Data loading and splitting pipelines
-│       ├── features.py     # Feature engineering & transformation functions
+│       ├── features.py     # Feature extraction pipelines
 │       ├── predict.py      # Model loading and inference engines
 │       └── train.py        # Model training and ONNX export pipeline
-├── tests/                  # Pytest test suite (API, pipeline, and ONNX parity)
+├── tests/                  # Pytest test suite
 │   ├── test_api.py
 │   ├── test_onnx_parity.py
 │   ├── test_pipeline.py
@@ -98,7 +101,6 @@ mlops-practitioner/
 ├── Dockerfile              # Non-root container runtime configuration
 ├── pyproject.toml          # Build configuration and dependency management
 └── README.md               # Project documentation
-
 
 🏷️ Release
 Tagged under v0.1.0 representing Module 1: Production Machine Learning Baseline.
