@@ -1,0 +1,70 @@
+services:
+  # Postgres for MLflow Metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: mlflow_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflowpassword
+      POSTGRES_DB: mlflowdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # MinIO for Artifact Storage
+  minio:
+    image: minio/minio:latest
+    container_name: mlflow_minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # Create MinIO Bucket automatically
+  create_bucket:
+    image: minio/mc:latest
+    container_name: mlflow_create_bucket
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadminpassword) do echo 'Waiting for MinIO...' && sleep 1; done;
+      /usr/bin/mc mb --ignore-existing myminio/mlflow;
+      exit 0;
+      "
+
+  # MLflow Tracking Server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow_server
+    restart: always
+    depends_on:
+      - postgres
+      - minio
+    ports:
+      - "5000:5000"
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadminpassword
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    entrypoint: >
+      /bin/sh -c "
+      pip install --no-cache-dir psycopg2-binary &&
+      mlflow server
+      --backend-store-uri postgresql://mlflow:mlflowpassword@postgres:5432/mlflowdb
+      --default-artifact-root s3://mlflow/
+      --host 0.0.0.0
+      --port 5000
+      "
+
+volumes:
+  postgres_data:
+  minio_data:
