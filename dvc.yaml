@@ -1,0 +1,29 @@
+stages:
+  prepare:
+    cmd: python src/prodml/data.py
+    deps:
+      - data/raw/green_tripdata_2024-01.parquet
+      - src/prodml/data.py
+    outs:
+      - data/prepared/data.parquet
+
+  train:
+    cmd: python src/prodml/train.py
+    deps:
+      - data/prepared/data.parquet
+      - src/prodml/train.py
+    params:
+      - train.n_estimators
+      - train.max_depth
+      - train.learning_rate
+    outs:
+      - models/model.pkl
+
+  evaluate:
+    cmd: python src/prodml/evaluate.py
+    deps:
+      - models/model.pkl
+      - data/prepared/data.parquet
+    metrics:
+      - reports/metrics.json:
+          cache: false

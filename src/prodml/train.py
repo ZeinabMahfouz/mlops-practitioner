@@ -138,7 +138,7 @@ def train_ridge_baseline(dv, X_train, X_val, y_train, y_val, git_hash: str):
 
 def run_xgboost_sweep(
     X_train, X_val, y_train, y_val, git_hash: str, n_trials: int = 10
-):
+) -> dict:
     """Perform hyperparameter optimization sweep for XGBoost with Optuna."""
     logger.info("Starting XGBoost Optuna Hyperparameter Sweep...")
 
@@ -185,6 +185,8 @@ def run_xgboost_sweep(
         mlflow.log_metric("best_mae", study.best_value)
         logger.info(f"XGBoost Sweep Complete! Best MAE: {study.best_value:.4f}")
 
+        return study.best_params
+
 
 def main() -> None:
     ensure_minio_bucket("mlflow")  # Create bucket if missing
@@ -195,7 +197,18 @@ def main() -> None:
     train_ridge_baseline(dv, X_train, X_val, y_train, y_val, git_hash)
 
     # 2. XGBoost Optuna Sweep
-    run_xgboost_sweep(X_train, X_val, y_train, y_val, git_hash, n_trials=10)
+    best_params = run_xgboost_sweep(
+        X_train, X_val, y_train, y_val, git_hash, n_trials=10
+    )
+
+    # 3. Train best XGBoost model and save artifact locally
+    best_model = xgb.XGBRegressor(**best_params)
+    best_model.fit(X_train, y_train)
+
+    settings.MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(settings.MODEL_PATH, "wb") as f_out:
+        pickle.dump((dv, best_model), f_out)
+    logger.info(f"Best XGBoost model saved locally to {settings.MODEL_PATH}")
 
 
 if __name__ == "__main__":
