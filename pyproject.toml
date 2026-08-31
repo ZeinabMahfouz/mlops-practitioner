@@ -10,23 +10,6 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "pydantic-settings",
-    "onnxruntime"
+    "onnxruntime",
+    "mlflow"
 ]
-
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-cov",
-    "ruff",
-    "black",
-    "mypy",
-    "httpx",
-    "pre-commit"
-]
-
-[project.scripts]
-prodml-train = "prodml.train:main"
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
