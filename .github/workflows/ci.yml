@@ -20,7 +20,8 @@ jobs:
       - name: Install dependencies & package
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[dev]"
+          pip install -e .
+          pip install ruff black pytest pytest-cov httpx mypy pre-commit
 
       - name: Code formatting & linting check
         run: |
