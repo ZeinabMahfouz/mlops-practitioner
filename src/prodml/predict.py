@@ -39,10 +39,10 @@ class DurationPredictor:
     def __init__(
         self,
         dv_path: str = settings.MODEL_PATH,
-        # Load by Alias instead of hardcoded version path to meet Step 03 requirements
         model_uri: str = "models:/ride-duration-xgboost@champion",
+        model_path: str | None = None,
     ) -> None:
-        self.dv_path = dv_path
+        self.dv_path = model_path or dv_path
         self.model_uri = model_uri
         self.dv = None
         self.model = None
