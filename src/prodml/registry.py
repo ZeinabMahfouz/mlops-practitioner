@@ -1,8 +1,8 @@
 import mlflow
+from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
 from prodml.config import settings
-from mlflow.exceptions import MlflowException
 
 mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
 client = MlflowClient()
@@ -27,7 +27,7 @@ def promote_if_better(
         champion_version = client.get_model_version_by_alias(model_name, "champion")
         champion_run = client.get_run(champion_version.run_id)
         champion_metric = champion_run.data.metrics.get(metric)
-    except MlflowException:  # noqa: BLE001
+    except MlflowException:
         champion_metric = float("inf")  # If no champion exists yet
 
     print(
