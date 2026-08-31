@@ -20,6 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
           pip install ruff black pytest pytest-cov httpx mlflow pydantic-settings
           pip install --no-build-isolation -e .
 
