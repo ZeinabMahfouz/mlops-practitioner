@@ -2,7 +2,7 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main,module-2-tracking-automation ]
   pull_request:
     branches: [ main ]
 
