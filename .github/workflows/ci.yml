@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install ruff black pytest pytest-cov httpx
+          pip install ruff black pytest pytest-cov httpx mlflow
           pip install --no-build-isolation -e .
 
       - name: Code formatting & linting check
