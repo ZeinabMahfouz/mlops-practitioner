@@ -11,5 +11,6 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "onnxruntime",
-    "mlflow"
+    "mlflow",
+    "boto3"
 ]
