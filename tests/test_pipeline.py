@@ -1,5 +1,4 @@
 from unittest.mock import patch
-
 import pandas as pd
 
 from prodml.data import split_data
@@ -8,6 +7,7 @@ from prodml.train import main as train_main
 
 
 def test_engineer_features():
+    # Test feature engineering pipeline logic
     df = pd.DataFrame(
         {
             "PULocationID": [10, 20],
@@ -27,6 +27,7 @@ def test_engineer_features():
 
 
 def test_split_data():
+    # Test dataset splitting logic into train and validation sets
     df = pd.DataFrame(
         {
             "PU_DO": ["10_15", "20_25", "30_35", "40_45"],
@@ -39,8 +40,10 @@ def test_split_data():
     assert len(df_val) > 0
 
 
+@patch("boto3.client")
 @patch("prodml.train.load_data")
-def test_train_main(mock_load_data, tmp_path, monkeypatch):
+def test_train_main(mock_load_data, mock_boto_client, tmp_path, monkeypatch):
+    # Mock input data frame for training pipeline
     df_mock = pd.DataFrame(
         {
             "PULocationID": [10, 20, 30, 40, 50],
@@ -52,11 +55,16 @@ def test_train_main(mock_load_data, tmp_path, monkeypatch):
     )
     mock_load_data.return_value = df_mock
 
+    # Set up temporary path for model persistence during tests
     fake_model_path = tmp_path / "model.pkl"
     monkeypatch.setattr("prodml.config.settings.MODEL_PATH", fake_model_path)
-
-    # توجيه MLflow للتخزين المؤقت المحلي أثناء الاختبارات
+    
+    # Configure local file store URI for MLflow to avoid external connections
     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
 
+    # Execute training pipeline main function
     train_main()
+    
+    # Assert that the model file was successfully created
     assert fake_model_path.exists()
