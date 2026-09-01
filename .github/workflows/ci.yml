@@ -9,6 +9,8 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    env:
+      MLFLOW_TRACKING_URI: file:///tmp/mlruns
     steps:
       - uses: actions/checkout@v4
 
