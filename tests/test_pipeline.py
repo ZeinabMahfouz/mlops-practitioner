@@ -59,13 +59,13 @@ def test_train_main(mock_load_data, mock_boto_client, tmp_path, monkeypatch):
     # Set up temporary path for model persistence during tests
     fake_model_path = tmp_path / "model.pkl"
     monkeypatch.setattr("prodml.config.settings.MODEL_PATH", fake_model_path)
-    
+
     # Configure local file store URI for MLflow to avoid external connections
     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
 
     # Execute training pipeline main function
     train_main()
-    
+
     # Assert that the model file was successfully created
     assert fake_model_path.exists()
