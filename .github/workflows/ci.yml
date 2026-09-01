@@ -28,13 +28,13 @@ jobs:
           python -m ruff check src tests
           python -m black --check src tests
 
-      - name: Run tests with pytest & coverage
+      - name: Debug pytest collection
         run: |
-          python -m pytest -v --cov=src/prodml --cov-report=term-missing --cov-fail-under=50
+          python -m pytest --collect-only -v tests/test_pipeline.py
 
       - name: Run tests with pytest & coverage
         run: |
-          pytest -v --cov=src/prodml --cov-report=term-missing --cov-fail-under=50
+          python -m pytest -v --cov=src/prodml --cov-report=term-missing --cov-fail-under=50
 
   build-docker:
     needs: lint-and-test
