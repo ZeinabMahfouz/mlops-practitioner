@@ -13,5 +13,7 @@ dependencies = [
     "onnxruntime",
     "mlflow",
     "boto3",
-    "optuna"
+    "optuna",
+    "xgboost",
+    "skl2onnx"
 ]
