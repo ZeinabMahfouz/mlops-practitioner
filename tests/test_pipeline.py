@@ -54,7 +54,7 @@ def test_train_main(mock_load_data, tmp_path, monkeypatch):
 
     fake_model_path = tmp_path / "model.pkl"
     monkeypatch.setattr("prodml.config.settings.MODEL_PATH", fake_model_path)
-    
+
     # توجيه MLflow للتخزين المؤقت المحلي أثناء الاختبارات
     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
 
