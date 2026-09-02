@@ -12,9 +12,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 @pytest.fixture(autouse=True)
 def setup_dummy_model():
-    # Ensure the models directory exists
     model_path = Path("models/model.pkl")
     model_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Remove corrupted or existing model file to prevent unpickling errors
+    if model_path.exists():
+        model_path.unlink()
 
     # Create fitted model and vectorizer
     model = LinearRegression()
