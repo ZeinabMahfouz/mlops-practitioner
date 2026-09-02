@@ -6,16 +6,17 @@ import pytest
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LinearRegression
 
-# add the src directory to the sys.path to ensure that the prodml package can be imported
+# Add the src directory to sys.path to ensure prodml package can be imported
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
 @pytest.fixture(autouse=True)
 def setup_dummy_model():
-    # Automatically create a valid fitted dummy model file at the default path before tests run
+    # Ensure the models directory exists
     model_path = Path("models/model.pkl")
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Create fitted model and vectorizer
     model = LinearRegression()
     dv = DictVectorizer()
     X = dv.fit_transform(
@@ -31,4 +32,5 @@ def setup_dummy_model():
     y = [10.0]
     model.fit(X, y)
 
+    # Dump the tuple safely using joblib
     joblib.dump((model, dv), model_path)
