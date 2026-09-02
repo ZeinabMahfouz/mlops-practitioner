@@ -24,17 +24,19 @@ def test_predict_endpoint(tmp_path, monkeypatch):
     dummy_model_path = tmp_path / "model.pkl"
     model = LinearRegression()
     dv = DictVectorizer()
-    dv.fit(
+    X_train = dv.fit_transform(
         [
             {
                 "PULocationID": 130,
                 "DOLocationID": 205,
                 "trip_distance": 3.5,
                 "PU_DO": "130_205",
-                "duration": 10.0,
             }
         ]
     )
+    y_train = [10.0]
+    model.fit(X_train, y_train)
+
     joblib.dump((model, dv), dummy_model_path)
 
     # Override the application's model path setting to point to the temporary file
