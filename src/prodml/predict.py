@@ -1,8 +1,11 @@
+import logging
 import pickle
 import time
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def timed(func: Callable) -> Callable:
@@ -11,7 +14,7 @@ def timed(func: Callable) -> Callable:
         start = time.time()
         result = func(*args, **kwargs)
         end = time.time()
-        print(f"[{func.__name__}] executed in {end - start:.4f}s")
+        logger.info("[%s] executed in %.4fs", func.__name__, end - start)
         return result
 
     return wrapper
