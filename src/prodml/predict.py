@@ -41,9 +41,11 @@ class DurationPredictor:
     @timed
     def predict_one(self, features: dict[str, Any]) -> float:
         model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
-        # إذا كان هناك DictVectorizer مخزن داخل القاموس:
         if isinstance(self.model, dict) and "dv" in self.model:
             X = self.model["dv"].transform([features])
+            if "xgboost" in str(type(model_obj)).lower() or "booster" in str(type(model_obj)).lower():
+                import xgboost as xgb
+                X = xgb.DMatrix(X)
             preds = model_obj.predict(X)
         else:
             preds = model_obj.predict([features])
@@ -53,6 +55,9 @@ class DurationPredictor:
         model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
         if isinstance(self.model, dict) and "dv" in self.model:
             X = self.model["dv"].transform(features_list)
+            if "xgboost" in str(type(model_obj)).lower() or "booster" in str(type(model_obj)).lower():
+                import xgboost as xgb
+                X = xgb.DMatrix(X)
             preds = model_obj.predict(X)
         else:
             preds = model_obj.predict(features_list)
