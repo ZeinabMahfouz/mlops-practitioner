@@ -3,17 +3,15 @@ import pickle
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
 import boto3
 import mlflow
 import mlflow.sklearn
 import mlflow.xgboost
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import xgboost as xgb
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-import xgboost as xgb
 
 from prodml.config import settings
 
@@ -34,11 +32,11 @@ def ensure_bucket_exists_for_uri(artifact_uri):
         )
         try:
             s3.head_bucket(Bucket=bucket_name)
-        except Exception:
+        except Exception:  # noqa: BLE001
             try:
                 s3.create_bucket(Bucket=bucket_name)
                 logger.info(f"Bucket '{bucket_name}' created automatically in MinIO.")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Could not create bucket {bucket_name}: {e}")
 
 
