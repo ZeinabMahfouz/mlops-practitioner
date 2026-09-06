@@ -1,6 +1,8 @@
 import mlflow
 from mlflow.tracking import MlflowClient
+
 from prodml.config import settings
+
 
 def promote_best_model():
     # Set tracking URI

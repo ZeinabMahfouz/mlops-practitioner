@@ -1,11 +1,12 @@
 import json
 import pickle
 import sys
-import xgboost as xgb
 from pathlib import Path
-import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+
 import numpy as np
+import pandas as pd
+import xgboost as xgb
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
 def main():

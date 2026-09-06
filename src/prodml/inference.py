@@ -1,10 +1,11 @@
 import mlflow
-import pandas as pd
 import xgboost as xgb
 from sklearn.feature_extraction import DictVectorizer
+
 from prodml.config import settings
 from prodml.data import load_data
 from prodml.features import engineer_features
+
 
 def predict_duration():
     # 1. Set MLflow tracking URI

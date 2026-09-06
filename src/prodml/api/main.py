@@ -1,9 +1,9 @@
-from fastapi import FastAPI
 import mlflow
 import xgboost as xgb
-import pandas as pd
+from fastapi import FastAPI
 from pydantic import BaseModel
 from sklearn.feature_extraction import DictVectorizer
+
 from prodml.config import settings
 
 app = FastAPI(title="Ride Duration Prediction API")
@@ -17,7 +17,7 @@ def predict(trip: TripInput):
     # تعيين رابط التتبع الخاص بـ MLflow للتأكد من الاتصال بالخير الخارجي
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URL)
     
-    model_name = "ride-duration-predictor"
+    
     model_uri = "models:/ride-duration-predictor/latest"
     
     model = mlflow.xgboost.load_model(model_uri)
