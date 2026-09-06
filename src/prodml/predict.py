@@ -23,13 +23,11 @@ def timed(func: Callable) -> Callable:
 
 class DurationPredictor:
     def __init__(
-        self, model_uri: str = "models:/ride-duration-predictor/Production"
+        self, model_path: str | None = None, model_uri: str | None = "models:/ride-duration-predictor/Production"
     ) -> None:
+        self.model_path = model_path
         self.model_uri = model_uri
         self.model = None
-
-    def load(self) -> None:
-        self.model = mlflow.pyfunc.load_model(self.model_uri)
 
     @timed
     def predict_one(self, features: dict[str, Any]) -> float:
