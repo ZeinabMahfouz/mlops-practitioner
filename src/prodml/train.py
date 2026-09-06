@@ -12,7 +12,7 @@ import numpy as np
 import xgboost as xgb
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-
+from prodml.data import load_data
 from prodml.config import settings
 
 logging.basicConfig(level=logging.INFO)
