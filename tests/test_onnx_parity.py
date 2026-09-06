@@ -27,7 +27,10 @@ def test_onnx_parity():
 
     # 2. Transform sample data
     sample_dict = [{"PU_DO": "130_205", "trip_distance": 2.5}]
-    X_sample = dv.transform(sample_dict).astype(np.float32).toarray()
+    X_sample = dv.transform(sample_dict)
+    if hasattr(X_sample, "toarray"):
+        X_sample = X_sample.toarray()
+    X_sample = X_sample.astype(np.float32)
 
     # 3. Model predictions
     if "xgboost" in str(type(pkl_model)).lower() or "booster" in str(type(pkl_model)).lower():
