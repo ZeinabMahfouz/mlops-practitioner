@@ -18,7 +18,7 @@ def main():
     # 1. تحميل النموذج والـ DictVectorizer المحفوظين معاً
     with open(model_path, "rb") as f:
         artifact = pickle.load(f)
-    
+
     model = artifact["model"]
     dv = artifact["dv"]
 
@@ -38,17 +38,16 @@ def main():
     mae = mean_absolute_error(y_test, y_pred)
     rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
 
-    metrics = {
-        "test_mae": float(mae),
-        "test_rmse": rmse
-    }
+    metrics = {"test_mae": float(mae), "test_rmse": rmse}
 
     # 4. حفظ المقاييس بصيغة JSON لكي يقرأها DVC
     metrics_path = reports_dir / "metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=4)
 
-    print(f"Evaluation metrics saved to {metrics_path} | MAE: {mae:.4f}, RMSE: {rmse:.4f}")
+    print(
+        f"Evaluation metrics saved to {metrics_path} | MAE: {mae:.4f}, RMSE: {rmse:.4f}"
+    )
 
 
 if __name__ == "__main__":

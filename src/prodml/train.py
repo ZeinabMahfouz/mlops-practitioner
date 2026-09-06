@@ -43,6 +43,7 @@ def ensure_bucket_exists_for_uri(artifact_uri):
 def load_features(input_dir: Path):
     """Load train and test parquet features and vectorize them."""
     import pandas as pd
+
     train_df = pd.read_parquet(input_dir / "train.parquet")
     val_df = pd.read_parquet(input_dir / "test.parquet")
 
@@ -67,7 +68,7 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
     mlflow.xgboost.autolog(disable=True)
     with mlflow.start_run(run_name="xgboost_model", nested=True) as run:
         ensure_bucket_exists_for_uri(run.info.artifact_uri)
-        
+
         mlflow.log_params(params)
         mlflow.set_tag("git_commit", "v0.1.0")
         mlflow.set_tag("data_version", "2024-01")
@@ -94,9 +95,7 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
         mlflow.log_metric("rmse", rmse)
 
         mlflow.xgboost.log_model(
-            model, 
-            "model",
-            registered_model_name="ride-duration-predictor"
+            model, "model", registered_model_name="ride-duration-predictor"
         )
         return model, mae
 
@@ -115,7 +114,7 @@ def main() -> None:
         "learning_rate": 0.1,
         "max_depth": 6,
         "objective": "reg:squarederror",
-        "eval_metric": "mae"
+        "eval_metric": "mae",
     }
 
     with mlflow.start_run(run_name="xgboost_sweep") as parent_run:
@@ -123,14 +122,11 @@ def main() -> None:
         model, mae = train_xgboost(X_train, X_val, y_train, y_val, params)
 
     # حفظ النموذج والـ DictVectorizer معاً في ملف واحد لكي تستخدمه مرحلة evaluate والتنبؤ لاحقاً
-    model_artifact = {
-        "model": model,
-        "dv": dv
-    }
+    model_artifact = {"model": model, "dv": dv}
     model_path = output_dir / "model.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(model_artifact, f)
-    
+
     logger.info(f"Model successfully saved to {model_path} with MAE: {mae:.4f}")
 
 

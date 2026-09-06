@@ -8,16 +8,14 @@ class Settings(BaseSettings):
     DATA_PATH: Path = Path("data/green_tripdata_2024-01.parquet")
     MODEL_PATH: Path = Path("models/model.pkl")
     PORT: int = 8000
-    
+
     MLFLOW_TRACKING_URL: str = "http://localhost:5000"
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None
     MLFLOW_S3_ENDPOINT_URL: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=".env", 
-        env_file_encoding="utf-8", 
-        extra="ignore"
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
     def __init__(self, **kwargs):

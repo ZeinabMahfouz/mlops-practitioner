@@ -22,7 +22,9 @@ def timed(func: Callable) -> Callable:
 
 
 class DurationPredictor:
-    def __init__(self, model_uri: str = "models:/ride-duration-predictor/Production") -> None:
+    def __init__(
+        self, model_uri: str = "models:/ride-duration-predictor/Production"
+    ) -> None:
         self.model_uri = model_uri
         self.model = None
 
