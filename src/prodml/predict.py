@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 import time
 from collections.abc import Callable
 from functools import wraps
@@ -24,15 +24,21 @@ def timed(func: Callable) -> Callable:
 
 class DurationPredictor:
     def __init__(
-        self, model_path: str | None = None, model_uri: str | None = "models:/ride-duration-predictor/Production"
+        self,
+        model_path: str | None = None,
+        model_uri: str | None = "models:/ride-duration-predictor/Production",
     ) -> None:
         self.model_path = model_path
         self.model_uri = model_uri
         self.model = None
+
     def load(self) -> None:
         target = str(self.model_path if self.model_path else self.model_uri)
-        if target.endswith(".pkl") or (os.path.exists(target) and os.path.isfile(target)):
+        if target.endswith(".pkl") or (
+            os.path.exists(target) and os.path.isfile(target)
+        ):
             import pickle
+
             with open(target, "rb") as f:
                 self.model = pickle.load(f)
         else:
@@ -43,8 +49,12 @@ class DurationPredictor:
         model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
         if isinstance(self.model, dict) and "dv" in self.model:
             X = self.model["dv"].transform([features])
-            if "xgboost" in str(type(model_obj)).lower() or "booster" in str(type(model_obj)).lower():
+            if (
+                "xgboost" in str(type(model_obj)).lower()
+                or "booster" in str(type(model_obj)).lower()
+            ):
                 import xgboost as xgb
+
                 X = xgb.DMatrix(X)
             preds = model_obj.predict(X)
         else:
@@ -55,8 +65,12 @@ class DurationPredictor:
         model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
         if isinstance(self.model, dict) and "dv" in self.model:
             X = self.model["dv"].transform(features_list)
-            if "xgboost" in str(type(model_obj)).lower() or "booster" in str(type(model_obj)).lower():
+            if (
+                "xgboost" in str(type(model_obj)).lower()
+                or "booster" in str(type(model_obj)).lower()
+            ):
                 import xgboost as xgb
+
                 X = xgb.DMatrix(X)
             preds = model_obj.predict(X)
         else:
