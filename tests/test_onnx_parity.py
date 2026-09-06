@@ -15,8 +15,14 @@ def test_onnx_parity():
     if not onnx_path.exists() or not pkl_path.exists():
         pytest.skip("Model artifacts not found.")
 
-    # 1. Load vectorizer & models
-    dv, pkl_model = joblib.load(pkl_path)
+    # 1. Load artifacts (handle both dict and tuple structures safely)
+    loaded_artifact = joblib.load(pkl_path)
+    if isinstance(loaded_artifact, dict):
+        dv = loaded_artifact["dv"]
+        pkl_model = loaded_artifact["model"]
+    else:
+        dv, pkl_model = loaded_artifact
+
     ort_session = ort.InferenceSession(str(onnx_path))
 
     # 2. Transform sample data
@@ -24,7 +30,11 @@ def test_onnx_parity():
     X_sample = dv.transform(sample_dict).astype(np.float32).toarray()
 
     # 3. Model predictions
-    expected_pred = pkl_model.predict(X_sample)
+    if "xgboost" in str(type(pkl_model)).lower() or "booster" in str(type(pkl_model)).lower():
+        import xgboost as xgb
+        expected_pred = pkl_model.predict(xgb.DMatrix(X_sample))
+    else:
+        expected_pred = pkl_model.predict(X_sample)
 
     input_name = ort_session.get_inputs()[0].name
     actual_pred = ort_session.run(None, {input_name: X_sample})[0]
