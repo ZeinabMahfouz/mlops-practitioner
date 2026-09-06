@@ -40,9 +40,20 @@ class DurationPredictor:
 
     @timed
     def predict_one(self, features: dict[str, Any]) -> float:
-        preds = self.model.predict([features])
+        model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
+        # إذا كان هناك DictVectorizer مخزن داخل القاموس:
+        if isinstance(self.model, dict) and "dv" in self.model:
+            X = self.model["dv"].transform([features])
+            preds = model_obj.predict(X)
+        else:
+            preds = model_obj.predict([features])
         return float(preds[0])
 
     def predict_batch(self, features_list: list[dict[str, Any]]) -> list[float]:
-        preds = self.model.predict(features_list)
+        model_obj = self.model["model"] if isinstance(self.model, dict) else self.model
+        if isinstance(self.model, dict) and "dv" in self.model:
+            X = self.model["dv"].transform(features_list)
+            preds = model_obj.predict(X)
+        else:
+            preds = model_obj.predict(features_list)
         return [float(p) for p in preds]
