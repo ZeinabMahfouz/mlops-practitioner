@@ -32,6 +32,15 @@ def test_onnx_parity():
         X_sample = X_sample.toarray()
     X_sample = X_sample.astype(np.float32)
 
+    # Dynamic dimension matching with ONNX expected input shape
+    input_name = ort_session.get_inputs()[0].name
+    expected_features = ort_session.get_inputs()[0].shape[1]
+    
+    if X_sample.shape[1] < expected_features:
+        pad_width = expected_features - X_sample.shape[1]
+        X_sample = np.pad(X_sample, ((0, 0), (0, pad_width)), mode='constant')
+    elif X_sample.shape[1] > expected_features:
+        X_sample = X_sample[:, :expected_features]
     # 3. Model predictions
     if "xgboost" in str(type(pkl_model)).lower() or "booster" in str(type(pkl_model)).lower():
         import xgboost as xgb
