@@ -1,3 +1,4 @@
+import os
 import logging
 import time
 from collections.abc import Callable
@@ -28,6 +29,14 @@ class DurationPredictor:
         self.model_path = model_path
         self.model_uri = model_uri
         self.model = None
+    def load(self) -> None:
+        target = str(self.model_path if self.model_path else self.model_uri)
+        if target.endswith(".pkl") or (os.path.exists(target) and os.path.isfile(target)):
+            import pickle
+            with open(target, "rb") as f:
+                self.model = pickle.load(f)
+        else:
+            self.model = mlflow.pyfunc.load_model(target)
 
     @timed
     def predict_one(self, features: dict[str, Any]) -> float:
