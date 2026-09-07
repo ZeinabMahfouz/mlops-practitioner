@@ -12,7 +12,7 @@ import numpy as np
 import xgboost as xgb
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from prodml.data import load_data
+
 from prodml.config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -101,7 +101,11 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
 
 
 def main() -> None:
-    input_dir = Path(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else Path("data/features")
+    input_dir = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
+        else Path("data/features")
+    )
     output_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("models")
     output_dir.mkdir(parents=True, exist_ok=True)
 
