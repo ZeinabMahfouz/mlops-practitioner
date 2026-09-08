@@ -9,6 +9,23 @@ import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
+def evaluate_model(model, dv, test_df):
+    """حساب مقاييس الأداء للنموذج على بيانات الاختبار"""
+    categorical = ["PU_DO"]
+    numerical = ["trip_distance"]
+
+    dicts_test = test_df[categorical + numerical].to_dict(orient="records")
+    X_test = dv.transform(dicts_test)
+    y_test = test_df["duration"].values
+
+    test_dmatrix = xgb.DMatrix(X_test)
+    y_pred = model.predict(test_dmatrix)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+
+    return {"test_mae": float(mae), "test_rmse": rmse}
+
+
 def main():
     model_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/model.pkl")
     input_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("data/features")
@@ -25,20 +42,8 @@ def main():
     # 2. تحميل بيانات الاختبار
     test_df = pd.read_parquet(input_dir / "test.parquet")
 
-    categorical = ["PU_DO"]
-    numerical = ["trip_distance"]
-
-    dicts_test = test_df[categorical + numerical].to_dict(orient="records")
-    X_test = dv.transform(dicts_test)
-    y_test = test_df["duration"].values
-
-    # 3. التنبؤ وحساب المقاييس
-    test_dmatrix = xgb.DMatrix(X_test)
-    y_pred = model.predict(test_dmatrix)
-    mae = mean_absolute_error(y_test, y_pred)
-    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
-
-    metrics = {"test_mae": float(mae), "test_rmse": rmse}
+    # 3. حساب المقاييس باستخدام الدالة المستقلة
+    metrics = evaluate_model(model, dv, test_df)
 
     # 4. حفظ المقاييس بصيغة JSON لكي يقرأها DVC
     metrics_path = reports_dir / "metrics.json"
@@ -46,7 +51,7 @@ def main():
         json.dump(metrics, f, indent=4)
 
     print(
-        f"Evaluation metrics saved to {metrics_path} | MAE: {mae:.4f}, RMSE: {rmse:.4f}"
+        f"Evaluation metrics saved to {metrics_path} | MAE: {metrics['test_mae']:.4f}, RMSE: {metrics['test_rmse']:.4f}"
     )
 
 

@@ -1,3 +1,4 @@
+import argparse
 import logging
 import pickle
 import sys
@@ -100,13 +101,33 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
         return model, mae
 
 
-def main() -> None:
-    input_dir = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
-        else Path("data/features")
+def parse_args(argv=None):
+    """Parse CLI args explicitly so pytest's own flags (--cov, -v, etc.)
+    never get misread as positional input/output paths."""
+    parser = argparse.ArgumentParser(description="Train the ride-duration model.")
+    parser.add_argument(
+        "input_dir",
+        nargs="?",
+        default="data/features",
+        type=Path,
+        help="Directory containing train.parquet / test.parquet",
     )
-    output_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("models")
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default="models",
+        type=Path,
+        help="Directory to write the trained model artifact to",
+    )
+    # parse_known_args ignores any extra flags (e.g. pytest's) instead of erroring
+    args, _unknown = parser.parse_known_args(argv)
+    return args
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    input_dir = args.input_dir
+    output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URL)

@@ -11,6 +11,10 @@ def promote_best_model():
 
     experiment_name = "ride-duration-prediction"
     experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        print(f"Experiment '{experiment_name}' not found.")
+        return None
+
     experiment_id = experiment.experiment_id
 
     # Search for all runs in the experiment and sort by lowest RMSE
@@ -20,7 +24,7 @@ def promote_best_model():
 
     if not runs:
         print("No runs found in the experiment.")
-        return
+        return None
 
     best_run = runs[0]
     best_run_id = best_run.info.run_id
@@ -46,6 +50,7 @@ def promote_best_model():
     print(
         f"Model version {model_version.version} successfully transitioned to Staging."
     )
+    return model_version
 
 
 if __name__ == "__main__":
