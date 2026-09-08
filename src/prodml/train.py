@@ -1,71 +1,158 @@
+import argparse
 import logging
 import pickle
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
 
+import boto3
+import mlflow
+import mlflow.sklearn
+import mlflow.xgboost
 import numpy as np
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
+import xgboost as xgb
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from prodml.config import settings
-from prodml.data import load_data, split_data
-from prodml.features import engineer_features
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
-    # 1. Load and prepare data
-    df_raw = load_data(str(settings.DATA_PATH))
-    df = engineer_features(df_raw)
-    df_train, df_val = split_data(df)
+def ensure_bucket_exists_for_uri(artifact_uri):
+    """Ensure the S3/MinIO bucket specified in the MLflow artifact URI exists."""
+    parsed = urlparse(artifact_uri)
+    if parsed.scheme == "s3":
+        bucket_name = parsed.netloc
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=settings.MLFLOW_S3_ENDPOINT_URL or "http://localhost:9000",
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        )
+        try:
+            s3.head_bucket(Bucket=bucket_name)
+        except Exception:  # noqa: BLE001
+            try:
+                s3.create_bucket(Bucket=bucket_name)
+                logger.info(f"Bucket '{bucket_name}' created automatically in MinIO.")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Could not create bucket {bucket_name}: {e}")
+
+
+def load_features(input_dir: Path):
+    """Load train and test parquet features and vectorize them."""
+    import pandas as pd
+
+    train_df = pd.read_parquet(input_dir / "train.parquet")
+    val_df = pd.read_parquet(input_dir / "test.parquet")
 
     categorical = ["PU_DO"]
     numerical = ["trip_distance"]
 
-    # Define dictionary features
-    dicts_train = df_train[categorical + numerical].to_dict(orient="records")
-    dicts_val = df_val[categorical + numerical].to_dict(orient="records")
+    dicts_train = train_df[categorical + numerical].to_dict(orient="records")
+    dicts_val = val_df[categorical + numerical].to_dict(orient="records")
 
-    # 2. Vectorize and train model
     dv = DictVectorizer()
     X_train = dv.fit_transform(dicts_train)
     X_val = dv.transform(dicts_val)
 
-    y_train = df_train["duration"].values
-    y_val = df_val["duration"].values
+    y_train = train_df["duration"].values
+    y_val = val_df["duration"].values
 
-    model = Ridge(alpha=1.0)
-    model.fit(X_train, y_train)
+    return X_train, X_val, y_train, y_val, dv
 
-    y_pred = model.predict(X_val)
-    mae = mean_absolute_error(y_val, y_pred)
-    rmse = float(np.sqrt(mean_squared_error(y_val, y_pred)))
 
-    logger.info(f"Validation MAE: {mae:.4f}")
-    logger.info(f"Validation RMSE: {rmse:.4f}")
+def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
+    """Train an XGBoost regression model with MLflow tracking."""
+    mlflow.xgboost.autolog(disable=True)
+    with mlflow.start_run(run_name="xgboost_model", nested=True) as run:
+        ensure_bucket_exists_for_uri(run.info.artifact_uri)
 
-    settings.MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mlflow.log_params(params)
+        mlflow.set_tag("git_commit", "v0.1.0")
+        mlflow.set_tag("data_version", "2024-01")
+        mlflow.set_tag("framework", "xgboost")
 
-    # 3. Save standard pickle model artifact
-    with open(settings.MODEL_PATH, "wb") as f_out:
-        pickle.dump((dv, model), f_out)
-    logger.info(f"Model saved to {settings.MODEL_PATH}")
+        train_dmatrix = xgb.DMatrix(X_train, label=y_train)
+        val_dmatrix = xgb.DMatrix(X_val, label=y_val)
 
-    # 4. Export Ridge model to ONNX
-    num_features = X_train.shape[1]
-    initial_type = [("float_input", FloatTensorType([None, num_features]))]
+        evals = [(val_dmatrix, "validation")]
+        model = xgb.train(
+            params,
+            train_dmatrix,
+            num_boost_round=100,
+            evals=evals,
+            early_stopping_rounds=10,
+            verbose_eval=False,
+        )
 
-    try:
-        onnx_model = convert_sklearn(model, initial_types=initial_type)
-        onnx_path = settings.MODEL_PATH.with_suffix(".onnx")
-        with open(onnx_path, "wb") as f_onnx:
-            f_onnx.write(onnx_model.SerializeToString())
-        logger.info(f"ONNX model saved to {onnx_path}")
-    except (RuntimeError, ValueError, TypeError) as e:
-        logger.warning(f"Could not export ONNX model: {e}")
+        y_pred = model.predict(val_dmatrix)
+        mae = mean_absolute_error(y_val, y_pred)
+        rmse = float(np.sqrt(mean_squared_error(y_val, y_pred)))
+
+        mlflow.log_metric("mae", mae)
+        mlflow.log_metric("rmse", rmse)
+
+        mlflow.xgboost.log_model(
+            model, "model", registered_model_name="ride-duration-predictor"
+        )
+        return model, mae
+
+
+def parse_args(argv=None):
+    """Parse CLI args explicitly so pytest's own flags (--cov, -v, etc.)
+    never get misread as positional input/output paths."""
+    parser = argparse.ArgumentParser(description="Train the ride-duration model.")
+    parser.add_argument(
+        "input_dir",
+        nargs="?",
+        default="data/features",
+        type=Path,
+        help="Directory containing train.parquet / test.parquet",
+    )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default="models",
+        type=Path,
+        help="Directory to write the trained model artifact to",
+    )
+    # parse_known_args ignores any extra flags (e.g. pytest's) instead of erroring
+    args, _unknown = parser.parse_known_args(argv)
+    return args
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URL)
+    mlflow.set_experiment("ride-duration-prediction")
+
+    X_train, X_val, y_train, y_val, dv = load_features(input_dir)
+
+    params = {
+        "learning_rate": 0.1,
+        "max_depth": 6,
+        "objective": "reg:squarederror",
+        "eval_metric": "mae",
+    }
+
+    with mlflow.start_run(run_name="xgboost_sweep") as parent_run:
+        ensure_bucket_exists_for_uri(parent_run.info.artifact_uri)
+        model, mae = train_xgboost(X_train, X_val, y_train, y_val, params)
+
+    # حفظ النموذج والـ DictVectorizer معاً في ملف واحد لكي تستخدمه مرحلة evaluate والتنبؤ لاحقاً
+    model_artifact = {"model": model, "dv": dv}
+    model_path = output_dir / "model.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump(model_artifact, f)
+
+    logger.info(f"Model successfully saved to {model_path} with MAE: {mae:.4f}")
 
 
 if __name__ == "__main__":
