@@ -56,5 +56,6 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
+          file: docker/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/mlops-practitioner:latest,${{ secrets.DOCKERHUB_USERNAME }}/mlops-practitioner:${{ github.sha }}
