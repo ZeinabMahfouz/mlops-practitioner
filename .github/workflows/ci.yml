@@ -27,6 +27,10 @@ jobs:
   test:
     needs: lint
     runs-on: ubuntu-latest
+    env:
+      MLFLOW_TRACKING_URL: ${{ secrets.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python
@@ -38,6 +42,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install skl2onnx
           pip install -e ".[dev]"
+      - name: Configure DVC Remote & Pull Data
+        run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          dvc remote modify origin --local password ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+          dvc pull
       - name: Run pytest with coverage
         run: |
           pytest --cov=src --cov-fail-under=70
