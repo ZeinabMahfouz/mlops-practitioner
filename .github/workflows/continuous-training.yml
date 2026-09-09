@@ -36,6 +36,9 @@ jobs:
 
       - name: Configure DVC Remote & Pull Data
         run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          dvc remote modify origin --local password ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
           dvc pull
 
       - name: Run Training Pipeline & Evaluation
