@@ -1,0 +1,76 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python src/prodml/data.py data/raw/green_tripdata_2024-01.parquet 
+      data/prepared/
+    deps:
+    - path: data/raw/green_tripdata_2024-01.parquet
+      hash: md5
+      md5: 33f3af0093a4bea95512fbd0df7f1b84
+      size: 1362284
+    - path: src/prodml/data.py
+      hash: md5
+      md5: eaaafeaa793f3bb9ce3cf381fe499c80
+      size: 666
+    outs:
+    - path: data/prepared/
+      hash: md5
+      md5: 34e263e5ecebf75e84bfe8d48fc6ef66.dir
+      size: 1542814
+      nfiles: 2
+  featurize:
+    cmd: python src/prodml/features.py data/prepared/ data/features/
+    deps:
+    - path: data/prepared/
+      hash: md5
+      md5: 34e263e5ecebf75e84bfe8d48fc6ef66.dir
+      size: 1542814
+      nfiles: 2
+    - path: src/prodml/features.py
+      hash: md5
+      md5: b70598c2f9a952ae221fd5da13800e89
+      size: 1256
+    outs:
+    - path: data/features/
+      hash: md5
+      md5: 4000d3846fc0e6f3abbab3158affda47.dir
+      size: 1945113
+      nfiles: 2
+  train:
+    cmd: python src/prodml/train.py data/features/ models/
+    deps:
+    - path: data/features/
+      hash: md5
+      md5: 4000d3846fc0e6f3abbab3158affda47.dir
+      size: 1945113
+      nfiles: 2
+    - path: src/prodml/train.py
+      hash: md5
+      md5: a1324207dcf96bd92e26474711855e50
+      size: 4570
+    outs:
+    - path: models/model.pkl
+      hash: md5
+      md5: 1a638fc3beb611f0f979bcf22c35b7e3
+      size: 344214
+  evaluate:
+    cmd: python src/prodml/evaluate.py models/model.pkl data/features/ reports/
+    deps:
+    - path: data/features/
+      hash: md5
+      md5: 4000d3846fc0e6f3abbab3158affda47.dir
+      size: 1945113
+      nfiles: 2
+    - path: models/model.pkl
+      hash: md5
+      md5: 1a638fc3beb611f0f979bcf22c35b7e3
+      size: 344214
+    - path: src/prodml/evaluate.py
+      hash: md5
+      md5: 22a3115348e0681855ade4e049dd1572
+      size: 1701
+    outs:
+    - path: reports/metrics.json
+      hash: md5
+      md5: ca6cd491e22ae6615f25dcea724b71b6
+      size: 74
