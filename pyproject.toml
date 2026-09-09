@@ -3,6 +3,7 @@ name = "prodml"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
+    "dvc[s3]",
     "scikit-learn",
     "pandas",
     "pyarrow",

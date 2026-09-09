@@ -216,7 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-.dvc/
 mlruns/
 mlflow.db
 *.db
+.dvc/config.local
+.dvc/cache/
+.dvc/tmp/

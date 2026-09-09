@@ -1,4 +1,6 @@
 [core]
-    remote = storage
+    remote = origin
 ['remote "storage"']
     url = ../dvc-storage
+['remote "origin"']
+    url = https://dagshub.com/ZeinabMahfouz/mlops-practitioner.dvc
