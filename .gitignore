@@ -222,3 +222,6 @@ mlflow.db
 .dvc/config.local
 .dvc/cache/
 .dvc/tmp/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/.terraform/
