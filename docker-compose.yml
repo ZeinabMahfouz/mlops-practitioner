@@ -19,8 +19,8 @@ services:
       MINIO_ROOT_USER: minio_user
       MINIO_ROOT_PASSWORD: minio_password
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9010:9000"
+      - "9011:9001"
     command: server /data --console-address ":9001"
     volumes:
       - miniodata:/data
@@ -69,6 +69,91 @@ services:
       - AWS_SECRET_ACCESS_KEY=minio_password
     restart: unless-stopped
 
+  airflow-postgres:
+    image: postgres:15-alpine
+    container_name: airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow_password
+      POSTGRES_DB: airflow_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - airflow_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.airflow
+    image: mlops-airflow:latest
+    container_name: airflow_init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment: &airflow-common-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@airflow-postgres:5432/airflow_db
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__WEBSERVER__SECRET_KEY: "module-3-dev-secret-change-me"
+      MLFLOW_TRACKING_URL: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio_user
+      AWS_SECRET_ACCESS_KEY: minio_password
+    volumes: &airflow-common-volumes
+      - ./pipelines/dags:/opt/airflow/dags
+      - ./data:/opt/airflow/data
+      - ./models:/opt/airflow/models
+      - ./reports:/opt/airflow/reports
+      - airflow_logs:/opt/airflow/logs
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow connections add fs_default --conn-type fs --conn-extra '{"path": "/"}' || true
+        airflow users create \
+          --username admin --password admin \
+          --firstname Airflow --lastname Admin \
+          --role Admin --email admin@example.com || true
+
+  airflow-webserver:
+    image: mlops-airflow:latest
+    container_name: airflow_webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-common-env
+    volumes: *airflow-common-volumes
+    ports:
+      - "8080:8080"
+    command: webserver
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    image: mlops-airflow:latest
+    container_name: airflow_scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-common-env
+    volumes: *airflow-common-volumes
+    command: scheduler
+    restart: unless-stopped
+
 volumes:
   pgdata:
   miniodata:
+  airflow_pgdata:
+  airflow_logs:

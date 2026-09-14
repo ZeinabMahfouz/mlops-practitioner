@@ -11,10 +11,13 @@ import mlflow.sklearn
 import mlflow.xgboost
 import numpy as np
 import xgboost as xgb
+from mlflow.tracking import MlflowClient
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from prodml.config import settings
+
+EXPERIMENT_NAME = "ride-duration-prediction"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,8 +67,9 @@ def load_features(input_dir: Path):
     return X_train, X_val, y_train, y_val, dv
 
 
-def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
-    """Train an XGBoost regression model with MLflow tracking."""
+def train_xgboost(
+    X_train, X_val, y_train, y_val, params: dict, logical_date: str | None = None
+):
     mlflow.xgboost.autolog(disable=True)
     with mlflow.start_run(run_name="xgboost_model", nested=True) as run:
         ensure_bucket_exists_for_uri(run.info.artifact_uri)
@@ -74,6 +78,8 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
         mlflow.set_tag("git_commit", "v0.1.0")
         mlflow.set_tag("data_version", "2024-01")
         mlflow.set_tag("framework", "xgboost")
+        if logical_date is not None:
+            mlflow.set_tag("logical_date", logical_date)
 
         train_dmatrix = xgb.DMatrix(X_train, label=y_train)
         val_dmatrix = xgb.DMatrix(X_val, label=y_val)
@@ -98,7 +104,7 @@ def train_xgboost(X_train, X_val, y_train, y_val, params: dict):
         mlflow.xgboost.log_model(
             model, "model", registered_model_name="ride-duration-predictor"
         )
-        return model, mae
+        return model, {"mae": mae, "rmse": rmse, "run_id": run.info.run_id}
 
 
 def parse_args(argv=None):
@@ -131,7 +137,7 @@ def main(argv=None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URL)
-    mlflow.set_experiment("ride-duration-prediction")
+    mlflow.set_experiment(EXPERIMENT_NAME)
 
     X_train, X_val, y_train, y_val, dv = load_features(input_dir)
 
@@ -144,15 +150,93 @@ def main(argv=None) -> None:
 
     with mlflow.start_run(run_name="xgboost_sweep") as parent_run:
         ensure_bucket_exists_for_uri(parent_run.info.artifact_uri)
-        model, mae = train_xgboost(X_train, X_val, y_train, y_val, params)
+        model, metrics = train_xgboost(X_train, X_val, y_train, y_val, params)
 
-    # حفظ النموذج والـ DictVectorizer معاً في ملف واحد لكي تستخدمه مرحلة evaluate والتنبؤ لاحقاً
+    # Save the model and DictVectorizer together as a single artifact for later evaluation
     model_artifact = {"model": model, "dv": dv}
     model_path = output_dir / "model.pkl"
     with open(model_path, "wb") as f:
         pickle.dump(model_artifact, f)
 
-    logger.info(f"Model successfully saved to {model_path} with MAE: {mae:.4f}")
+    logger.info(
+        f"Model successfully saved to {model_path} with MAE: {metrics['mae']:.4f}"
+    )
+
+
+def run_training(
+    input_dir: Path, output_dir: Path, logical_date: str | None = None
+) -> dict:
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URL)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+
+    model_suffix = f"_{logical_date}" if logical_date else ""
+    model_path = output_dir / f"model{model_suffix}.pkl"
+
+    if logical_date is not None:
+        client = MlflowClient()
+        experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
+        if experiment is not None:
+            existing = client.search_runs(
+                experiment_ids=[experiment.experiment_id],
+                filter_string=(
+                    f"tags.logical_date = '{logical_date}' and "
+                    "tags.mlflow.runName = 'xgboost_model'"
+                ),
+                order_by=["start_time DESC"],
+                max_results=1,
+            )
+            if existing and model_path.exists():
+                run = existing[0]
+                logger.info(
+                    "Found existing run %s for logical_date=%s -- skipping "
+                    "re-training (idempotency guard).",
+                    run.info.run_id,
+                    logical_date,
+                )
+                return {
+                    "run_id": run.info.run_id,
+                    "model_path": str(model_path),
+                    "mae": run.data.metrics.get("mae"),
+                    "rmse": run.data.metrics.get("rmse"),
+                    "reused": True,
+                }
+
+    X_train, X_val, y_train, y_val, dv = load_features(input_dir)
+    params = {
+        "learning_rate": 0.1,
+        "max_depth": 6,
+        "objective": "reg:squarederror",
+        "eval_metric": "mae",
+    }
+
+    with mlflow.start_run(run_name="xgboost_sweep") as parent_run:
+        ensure_bucket_exists_for_uri(parent_run.info.artifact_uri)
+        model, metrics = train_xgboost(
+            X_train, X_val, y_train, y_val, params, logical_date=logical_date
+        )
+
+    with open(model_path, "wb") as f:
+        pickle.dump({"model": model, "dv": dv}, f)
+
+    logger.info(
+        "Model trained for logical_date=%s -- run %s, MAE %.4f, RMSE %.4f, saved to %s",
+        logical_date,
+        metrics["run_id"],
+        metrics["mae"],
+        metrics["rmse"],
+        model_path,
+    )
+    return {
+        "run_id": metrics["run_id"],
+        "model_path": str(model_path),
+        "mae": metrics["mae"],
+        "rmse": metrics["rmse"],
+        "reused": False,
+    }
 
 
 if __name__ == "__main__":
