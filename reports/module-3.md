@@ -238,3 +238,129 @@ This is the same registered model (`ride-duration-predictor`) flowing
 through all three patterns in Steps 4-6 -- only layers 2 and 3 change
 shape per pattern; layer 4 (the MLflow registry Step 1's DAG feeds) is
 shared by all of them.
+
+## Step 3 -- CAT 1: the FastAPI baseline, and its four problems
+
+### Deploying it exposed two real bugs
+
+Before this could be measured honestly, two issues in the existing Module 1
+code had to be fixed:
+
+1. `docker/Dockerfile.api`'s `CMD` pointed at `prodml.api.main:app` -- a
+   throwaway module that reloads the model from MLflow on every request
+   and has no `/predict/batch`, `/health`, or `/metadata` endpoints. The
+   actual tested API (`tests/test_api.py`) is `prodml.api.app:app`, which
+   loads the model once at startup via `DurationPredictor`. Fixed the
+   `CMD` to serve the right module.
+2. The image never `COPY`'d a model file in at all, and `settings.MODEL_PATH`
+   defaults to `models/model.pkl`, which didn't exist yet locally (it's
+   gitignored -- generated, not committed). Generated it with
+   `python -m prodml.train data/features models`, then added
+   `COPY models/model.pkl ./models/model.pkl` to the Dockerfile -- a
+   single pickle baked directly into the image, which is itself CAT 1's
+   defining shape (see problem #4 below).
+
+### Baseline load test (50 users, realistic traffic)
+
+Locust, 50 users, 1-3s wait between requests, `POST /predict`:
+
+| Requests | Fails | Median | p95 | p99 | Avg | Min | Max | RPS |
+|---|---|---|---|---|---|---|---|---|
+| 1,352 | 0 | 10ms | 17ms | 28ms | 10.25ms | 3ms | 75ms | 24.7 |
+
+At realistic traffic levels the baseline is fast and healthy -- nothing
+here looks broken yet. That's an honest, useful data point on its own:
+CAT 1 isn't *always* bad, it's bad specifically once load stops giving it
+breathing room, which is exactly what the next two sections show.
+
+### Problem 1: batch size is always 1
+
+100 sequential single /predict calls: 0.497s (201.3 req/s)
+1x /predict/batch call with 100 trips: 0.179s (557.9 req/s)
+Speedup: 2.77x
+
+
+`/predict/batch` exists, but `predict_batch()` in `src/prodml/predict.py`
+still loops `predict_one()` row-by-row server-side -- there's no real
+vectorized batching happening. Most of the 2.77x win here is saved HTTP
+round-trips, not the model actually processing 100 rows at once. That gap
+between "fewer requests" and "real batching" is exactly what BentoML's
+Runner + micro-batching (Step 4) is built to close.
+
+### Problem 2: the GIL blocks concurrency
+
+Two Locust runs against the same 50 users, only the wait time changed:
+
+| Run | Wait time | Requests | Fails | Median | p95 | p99 | RPS |
+|---|---|---|---|---|---|---|---|
+| Realistic traffic | 1-3s | 1,352 | 0 | 10ms | 17ms | 28ms | 24.7 |
+| Sustained pressure | ~0s | 66,882 | 0 | 80ms | 160ms | 240ms | 359.2 |
+
+Removing the pause between requests (same 50 users, so same concurrency,
+just no idle time) pushed p95 from 17ms to 160ms and p99 from 28ms to
+240ms -- nearly a 10x degradation -- with zero failures, meaning requests
+were succeeding but queuing up waiting for CPU time rather than being
+rejected. `uvicorn`'s single worker process runs this sync route through
+a thread pool, but Python's GIL means only one thread executes the
+CPU-bound `DictVectorizer.transform` + XGBoost `.predict()` work at a
+time, so extra concurrent requests wait in line instead of running in
+parallel across cores.
+
+*(Honest gap: I captured `docker stats` after the stress run had already
+stopped, not during it, so I don't have a clean CPU-plateau reading to
+pair with the latency climb. The latency degradation itself, at zero
+failures and identical user count, is still real evidence that something
+serializes under load -- just not as complete a picture as watching CPU
+sit flat while p95 climbs live.)*
+
+### Problem 3: eager runtime vs ONNX Runtime
+
+1000x eager XGBoost .predict(): 0.932s (0.932 ms/pred)
+1000x ONNX Runtime .run(): 0.007s (0.007 ms/pred)
+Speedup: 133.74x
+
+
+*(Caveat: `models/model.onnx` is a static artifact from Module 1 -- this
+pipeline has no export step that regenerates it when the model retrains,
+so this compares runtime mechanism overhead, eager Python/XGBoost calls
+vs a compiled ONNX Runtime graph, not two exports of the identical
+model. That gap is itself a small example of problem #4: the ONNX file
+isn't tracked by anything that knows it can drift from the registry
+model.)*
+
+Even accounting for that, a >100x gap is the expected shape of the
+result: eager XGBoost pays Python call overhead and no graph
+optimization on every `.predict()`; ONNX Runtime compiles the graph once
+and executes it directly.
+
+### Problem 4: no model versioning in the artifact
+
+Fixing the deployment bug above *is* the demonstration: shipping a
+different model today means editing the `COPY models/model.pkl` line (or
+regenerating the file it copies), rebuilding the whole image, and
+redeploying the container. There's no independent way to swap the
+artifact -- no version tag, no rollback short of redeploying an older
+image, no way to know which model is running except by inspecting the
+Dockerfile that built it. A bad deploy means a full rebuild-and-redeploy
+cycle to fix, with no faster path back to the previous model. BentoML's
+versioned Bento store (Step 4) replaces this with an artifact that
+carries its own version independent of the container image.
+
+### Baseline numbers
+
+Every later serving category (BentoML, ONNX Runtime, OpenVINO, TensorRT)
+gets measured against this row:
+
+| Category | Runtime | p50 | p95 | p99 | RPS @ 50 users | Failure % |
+|---|---|---|---|---|---|---|
+| CAT 1 | FastAPI eager | 10ms | 17ms | 28ms | 24.7 | 0% |
+
+### Requirements checklist
+
+- [x] Module 1 API deployed and measured (two real deployment bugs found and fixed first: wrong Dockerfile CMD, missing model artifact)
+- [x] Locust ramp to 50 users; p50/p95/p99/RPS recorded
+- [x] Problem 1 (batch size 1) demonstrated with evidence
+- [x] Problem 2 (GIL) demonstrated with evidence (latency degradation confirmed; CPU-plateau reading not captured cleanly -- noted honestly above)
+- [x] Problem 3 (eager vs ONNX) demonstrated with evidence
+- [x] Problem 4 (no versioning) explained from direct experience deploying this step
+- [x] Baseline numbers recorded for later comparison
