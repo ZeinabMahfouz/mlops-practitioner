@@ -1,0 +1,11 @@
+service: "serving.service:RideDurationService"
+labels:
+  owner: zeinab
+  project: ride-duration-prediction
+include:
+  - "serving/*.py"
+python:
+  packages:
+    - xgboost
+    - scikit-learn
+    - numpy

@@ -364,3 +364,252 @@ gets measured against this row:
 - [x] Problem 3 (eager vs ONNX) demonstrated with evidence
 - [x] Problem 4 (no versioning) explained from direct experience deploying this step
 - [x] Baseline numbers recorded for later comparison
+
+## Step 4 -- CAT 2: BentoML (the primary web-service deliverable)
+
+### Saving the model into the Bento store
+
+`scripts/save_to_bento.py` loads the same `models/model.pkl` artifact Module 1
+produces (an XGBoost `Booster` + the `DictVectorizer` used to featurize raw ride
+fields) and saves both as one versioned unit in the local Bento model store:
+
+```python
+bento_model = bentoml.xgboost.save_model(
+    "ride_duration_xgb",
+    model,
+    signatures={"predict": {"batchable": True, "batch_dim": 0}},
+    custom_objects={"dv": dv},
+)
+```
+
+`custom_objects` is what makes this one versioned artifact instead of two things that
+can drift apart -- the DictVectorizer travels with the exact Booster it was fit
+alongside, addressed together by one tag (`ride_duration_xgb:4v4cqpvqnksi2aav`, in
+this run). `signatures={"predict": {"batchable": True, ...}}` is what turns on
+adaptive micro-batching for this model's `predict` calls (see below).
+
+### Architecture: the Runner-equivalent, out from under the API's GIL
+
+The course material's `Runner`/`.to_runner()` API is deprecated in the BentoML
+version this project installs (1.4.x); the current equivalent is
+`bentoml.depends()` composing two separate `@bentoml.service` classes. Each
+`@bentoml.service` class deploys as its own process(es) -- so this is the same
+architectural fix the Runner was for: CAT 1's problem #2 (the GIL blocking
+concurrency, because FastAPI ran `model.predict()` synchronously on the same
+event loop that accepts HTTP connections) is fixed by moving the compute-heavy
+`predict()` call onto a *separate* process from the HTTP-facing service.
+
+`serving/service.py`:
+
+```python
+import numpy as np
+import xgboost as xgb
+
+import bentoml
+from bentoml.models import BentoModel
+
+
+@bentoml.service(workers="cpu_count")
+class RideDurationModel:
+    """The compute-heavy piece: runs as its own process(es), separate from
+    the HTTP-facing service below. predict() executes out-of-process from the
+    API layer, so the API layer's event loop is never blocked by XGBoost's
+    compute (CAT 1 problem #2 fix).
+    """
+
+    bento_model = BentoModel("ride_duration_xgb:latest")
+
+    def __init__(self):
+        self.booster: xgb.Booster = self.bento_model.load_model()
+
+    @bentoml.api(batchable=True, batch_dim=0, max_batch_size=32, max_latency_ms=500)
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        dmatrix = xgb.DMatrix(features)
+        return self.booster.predict(dmatrix)
+
+
+@bentoml.service(workers="cpu_count")
+class RideDurationService:
+    model = bentoml.depends(RideDurationModel)
+    bento_model = BentoModel("ride_duration_xgb:latest")
+
+    def __init__(self):
+        self.dv = self.bento_model.custom_objects["dv"]
+
+    @bentoml.api
+    async def predict(
+        self, PULocationID: int, DOLocationID: int, trip_distance: float
+    ) -> dict:
+        features = {
+            "PU_DO": f"{PULocationID}_{DOLocationID}",
+            "trip_distance": trip_distance,
+        }
+        X = self.dv.transform([features])
+        X_dense = X.toarray().astype(np.float32) if hasattr(X, "toarray") else X
+        pred = await self.model.to_async.predict(X_dense)
+        return {"prediction": float(pred[0])}
+```
+
+`workers="cpu_count"` on both services matters more than it looks -- see the
+"debugging finding" section below.
+
+### Micro-batching: the max_batch_size / max_latency_ms trade-off
+
+`@bentoml.api(batchable=True, batch_dim=0, max_batch_size=32, max_latency_ms=500)`
+turns on adaptive micro-batching for `RideDurationModel.predict()`. Instead of
+running the XGBoost `Booster` once per incoming HTTP request, BentoML's runtime
+collects concurrently-arriving requests into a single batch and runs `predict()`
+once over the whole batch -- XGBoost (like most vectorized numerical libraries) is
+far more efficient scoring 32 rows in one call than scoring 1 row 32 times, so this
+raises throughput per CPU cycle.
+
+The two numbers are a genuine latency-vs-throughput dial, not independent settings:
+
+- `max_batch_size=32` caps how large a batch can grow. Set it too high and a request
+  that arrives when the batch is nearly full has to wait for many more requests
+  before the batch fires -- individual request latency grows even though aggregate
+  throughput looks great.
+- `max_latency_ms=500` caps how long BentoML will wait to fill a batch before running
+  it anyway, even if it's not full. This bounds the worst-case wait a single request
+  can suffer, at the cost of sometimes running smaller, less-efficient batches.
+
+In other words: raise `max_batch_size` and lower `max_latency_ms` and batches run
+smaller and more often (lower per-request latency, less throughput gain from
+batching); raise `max_latency_ms` and batches run larger and less often (better
+throughput, worse tail latency for the unlucky request that arrives just after a
+batch closed). 32 / 500ms was chosen as a starting point appropriate for an
+interactive, latency-sensitive prediction endpoint rather than a bulk-throughput one.
+
+### Health, liveness, and metrics endpoints
+
+No extra code was needed -- these ship built into the BentoML server:
+
+- `GET /healthz` -- liveness/readiness probe (returns 200 once the service is up)
+- `GET /livez` -- liveness probe
+- `GET /metrics` -- Prometheus-format metrics (request counts, latency histograms,
+  etc.), ready for Module 5 to scrape
+
+All three were smoke-tested directly with `curl` against the running container.
+
+### Build, containerize, and push
+
+```bash
+python scripts/save_to_bento.py          # saves the model into the local Bento store
+bentoml build                            # reads bentofile.yaml at repo root
+bentoml containerize ride_duration_service:latest
+docker run -d --name ride_duration_bento -p 3000:3000 ride_duration_service:<tag>
+docker push <docker-hub-user>/ride-duration-bento:0.3.0
+```
+
+`bentofile.yaml` lives at the repo root (not inside `serving/`) -- its `include` and
+`service` fields are resolved relative to the repo root, not to the folder it's
+saved in.
+
+### Debugging finding: workers=1 vs workers="cpu_count"
+
+The first version of `serving/service.py` used `workers=1` on `RideDurationModel`.
+Under a light 50-user Locust ramp with realistic think time
+(`wait_time = between(1, 3)`) this looked fine. Under the same 50-user ramp with a
+much shorter think time it failed badly: 6412 of 48351 requests (13.26%) failed.
+
+Digging into `docker logs` for the `RideDurationService` container (filtering
+precisely on `status=500|status=503|Traceback` rather than a loose `error` grep,
+which was matching false positives inside random hex trace IDs) showed the failures
+were all raised at `await self.model.to_async.predict(X_dense)`, inside aiohttp's
+client code -- specifically:
+
+- 6114x `aiohttp.client_exceptions.ServerDisconnectedError: Server disconnected`
+- 327x `asyncio.exceptions.CancelledError`
+
+Checking `RideDurationModel`'s own logs (not `RideDurationService`'s) showed it
+was itself returning `503 Service Unavailable` under load -- BentoML's built-in
+backpressure protection, not a Python exception in the prediction code. Root cause:
+`workers=1` meant exactly one OS process could accept HTTP calls from the composed
+`RideDurationService`; that single process couldn't keep up with concurrent load
+from 50 simulated users, so BentoML shed the excess (503s), and under heavier
+pressure some connections were dropped outright (`ServerDisconnectedError`).
+
+Fix: `workers="cpu_count"` on both `@bentoml.service` classes, spawning one process
+per CPU core instead of a single bottleneck process. Verified first with a 200
+concurrent-request async test against the sandboxed service (200/200 succeeded, 0
+errors), then rebuilt and redeployed for real:
+
+| Locust run (50 users)              | Before (`workers=1`) | After (`workers="cpu_count"`) |
+|-------------------------------------|----------------------|--------------------------------|
+| Normal traffic, `between(1, 3)`     | not re-tested after the fix broke it -- see below | 7724 req, **0 fails**, p50=12ms, p95=24ms, p99=40ms |
+| Stress, `between(0, 0.1)`           | 48351 req, 13.26% fail rate | 7552 req, **2.85% fail rate** (215 fails), p50=120ms, p95=2.6s, p99=31s |
+
+`workers="cpu_count"` cut the stress-test failure rate by roughly 4.6x and made
+the normal-traffic case fail-free at low, stable latency. It did not make the
+service infinite-capacity: `between(0, 0.1)` think time means 50 simulated users
+each fire a new request almost the instant the previous one returns -- a
+synthetic worst case no real user traffic pattern produces. Once concurrent
+in-flight requests exceed the number of CPU cores, BentoML queues the rest; under
+sustained hammering that queue itself grows, and requests waiting in it either
+time out (the remaining ~2.85% failures) or return only after several seconds
+(hence p95=2.6s / p99=31s under stress, versus single-digit-millisecond p95/p99
+under normal traffic). This is a genuine capacity boundary, not a bug -- and a
+believable one: micro-batching plus multi-worker composition fixed the
+*sustainable-load* failure mode CAT 1 had (GIL-blocked, single-process,
+zero-batching), without claiming to remove the physical limit of "more concurrent
+work than there are CPU cores to do it."
+
+### CAT 1 vs CAT 2 comparison (50 users)
+
+| Category | Runtime | Traffic pattern | P50 | P95 | P99 | RPS | Failure % |
+|----------|---------|------------------|-----|-----|-----|-----|-----------|
+| CAT 1 | FastAPI eager | normal (`between(1,3)`) | 10ms | 17ms | 28ms | 24.7 | 0% |
+| CAT 2 | BentoML + micro-batching | normal (`between(1,3)`) | 12ms | 24ms | 40ms | 24.7 | 0% |
+| CAT 1 | FastAPI eager | stress (~0s wait) | 80ms | 160ms | 240ms | 359.2 | 0% |
+| CAT 2 | BentoML + micro-batching | stress (`between(0,0.1)`) | 120ms | 2600ms | 31000ms | 36.5 | 2.85% |
+
+**Mechanism, pointed at directly -- and an honest correction.** The numbers above
+do not show CAT 2 beating CAT 1. At normal traffic, CAT 2 is slightly *slower*
+(p95 24ms vs 17ms, p99 40ms vs 28ms) at the same RPS. Under stress, the gap is
+much larger and goes the same direction: CAT 1 sustained 359.2 RPS at p95=160ms
+with zero failures, while CAT 2 managed only 36.5 RPS at p95=2600ms with a 2.85%
+failure rate.
+
+The reason is architectural, not a bug: `bentoml.depends()` fixes the GIL problem
+by moving `predict()` onto a *separate process*, reached over HTTP
+(`await self.model.to_async.predict(...)`) from `RideDurationService`. That
+buys process-level parallelism, but it also adds a network hop -- serialize,
+send, queue, deserialize -- to every single prediction, plus a second service's
+own backpressure limit (the 503-shedding behaviour documented above) sitting in
+the request path. For this specific model, an XGBoost booster with sub-millisecond
+compute per row, that fixed per-request overhead is bigger than the GIL-serialization
+cost it's paying to avoid: at 50 users the FastAPI baseline's `uvicorn` threadpool
+accepts and queues every connection in-process, degrading gracefully (latency
+climbs, nothing gets rejected), whereas the composed BentoML services hit their
+inter-service capacity limit sooner and shed load.
+
+This is a real, useful finding, not a wash: the Runner/`bentoml.depends()`
+separation is a trade, not a strict upgrade. It buys isolation and independent
+scaling of the compute-heavy piece, and it would very plausibly win once the
+per-request compute is heavy enough that GIL serialization -- not network
+overhead -- is the dominant cost (a larger model, heavier feature engineering,
+or higher concurrency than tested here). For a model this cheap, at this scale,
+the simpler single-process CAT 1 architecture is faster. The acceptance check's
+assumption ("BentoML beats FastAPI") doesn't hold universally -- it holds
+conditionally, on workload weight and concurrency, and this benchmark sits on
+the wrong side of that line for raw latency. Where CAT 2 still earns its place
+here is the two problems Step 3 documented that CAT 1 has independent of raw
+speed: versioned model artifacts decoupled from the container image (problem 4),
+and real vectorized batching via `batchable=True` rather than `/predict/batch`'s
+row-by-row loop (problem 1) -- both true regardless of which one wins a Locust
+run.
+
+### Requirements checklist
+
+- [x] Model + DictVectorizer saved into the Bento store as one versioned unit
+- [x] `serving/bentofile.yaml` and `serving/service.py` written, using
+      `bentoml.depends()` (current equivalent of `Runner`/`.to_runner()`) so
+      inference runs in a separate worker process from the API layer
+- [x] Adaptive micro-batching enabled (`batchable=True`, `max_batch_size=32`,
+      `max_latency_ms=500`), trade-off explained above
+- [x] Health (`/healthz`), liveness (`/livez`), and metrics (`/metrics`) endpoints --
+      built into the BentoML server, no extra code
+- [x ] `bentoml build && bentoml containerize` -- done locally; `docker push` to
+      Docker Hub 
+- [x] Re-ran the same 50-user ramp; BentoML row(s) next to FastAPI row, each delta
+      explained by mechanism (Runner-equivalent process separation, micro-batching)
