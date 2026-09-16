@@ -1,3 +1,5 @@
 /green_tripdata_2024-01.parquet
 /prepared
 /features
+/predictions
+/raw/batch_input

@@ -613,3 +613,86 @@ run.
       Docker Hub 
 - [x] Re-ran the same 50-user ramp; BentoML row(s) next to FastAPI row, each delta
       explained by mechanism (Runner-equivalent process separation, micro-batching)
+
+## Step 5: Batch scoring
+
+### Design
+
+`src/prodml/batch.py` reads one or more raw trip Parquet files, engineers the
+same features used at training time (`prodml.features.engineer_features` —
+shared with both the training pipeline and the CAT 1/CAT 2 serving paths, so
+batch scoring can't silently drift from what's served live), and scores them
+in chunks of 50,000 rows against the current model artifact
+(`models/model.pkl`, the same `{"model": xgb.Booster, "dv": DictVectorizer}`
+pickle CAT 1 and CAT 2 both load). Predictions are written to Parquet,
+partitioned by `pickup_date`, via `pyarrow`.
+
+Each run records wall-clock time, throughput (rows/sec), peak resident memory
+(`resource.getrusage(...).ru_maxrss`), model load time, and a derived
+cost-per-million-predictions figure under an illustrative flat instance-hour
+rate ($0.096/hr, roughly an on-demand AWS m5.large at time of writing — swap
+in your actual target instance/cloud rate for a real estimate).
+
+### Data
+
+Scored 20 months of real NYC TLC green taxi trip data (Jan 2022 -- Aug 2023,
+`data/raw/batch_input/`), well above the 1M-row requirement after feature
+engineering.
+
+### Orchestration
+
+Added as a new Airflow DAG, `pipelines/dags/batch_scoring_pipeline.py`
+(`dag_id: ride_duration_batch_scoring_pipeline`): a single `score_batch`
+PythonOperator task (logic in `pipelines/dags/batch_tasks.py`), scheduled
+`@daily` (nightly), with 2 retries on a 5-minute delay and a 30-minute
+execution timeout.
+
+Known simplification: this project has no live daily trip feed, so each
+nightly run currently re-scores the same fixed historical batch in
+`data/raw/batch_input/` rather than new data. In production this task would
+instead point at whatever partition landed since the last run.
+
+### Results (measured via `airflow dags test`, real end-to-end run)
+
+| Metric | Value |
+|---|---|
+| Total rows scored | 1,256,908 |
+| Wall-clock time | 15.86s |
+| Throughput | 79,250.8 rows/sec |
+| Peak RSS | 564.7 MB |
+| Model load time | 0.081s |
+| Cost / million predictions | $0.00034 (at $0.096/hr) |
+
+Predictions verified written to `data/predictions/`, partitioned by
+`pickup_date` (614 partitions).
+
+### Batch vs. web service cost comparison
+
+| Scenario | RPS | Failure % | Cost / million predictions |
+|---|---|---|---|
+| Batch scoring (measured) | 79,250.8 rows/sec | 0% | $0.00034 |
+| CAT 1, normal traffic | 24.7 | 0% | $1.08 |
+| CAT 1, stress (max sustainable, 0% failures) | 359.2 | 0% | $0.074 |
+
+*(CAT 2 excluded from this cost comparison: under stress it saturates at only
+36.5 RPS with a 2.85% failure rate and a 31-second p99 -- not a valid
+throughput ceiling to cost against, though it's a notable reliability finding
+in its own right.)*
+
+Batch scoring is roughly **3,176x cheaper per prediction than CAT 1 under
+normal traffic**, and roughly **218x cheaper than CAT 1 even pushed to its
+maximum sustainable (0%-failure) throughput**.
+
+**Mechanism.** Batch amortizes model load once across >1M rows and processes
+in large vectorized chunks (50k rows per `DMatrix`) with no per-request
+network or serialization overhead. A web service pays that overhead --
+connection handling, JSON (de)serialization, event-loop scheduling -- on
+every single request. Under normal traffic, CAT 1 is further handicapped
+because it's client-paced (Locust's `between(1,3)` wait) and running at a
+tiny fraction of its own throughput ceiling, so it gets none of batch's
+amortization benefit -- this is why the normal-traffic gap (~3,176x) is far
+above the course's usual 50-100x ballpark. Comparing against CAT 1 pushed to
+its real throughput ceiling instead narrows the gap to ~218x, much closer to
+that expected order of magnitude -- the remaining difference is explained by
+batch's much larger effective chunk size versus CAT 1 still serving one row
+per HTTP request even under load.
