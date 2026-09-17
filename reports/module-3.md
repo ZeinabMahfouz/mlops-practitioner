@@ -800,3 +800,161 @@ trip events for reprocessing or backtesting a new model. None of those
 apply here yet, so Redis Streams is the pragmatic choice for the current
 scale, with Kafka as the clear next step if the workload grows into those
 requirements.
+
+## Step 7: Accelerated runtimes
+
+### CAT 4: ONNX Runtime + OpenVINO (required)
+
+**Setup.** `models/model.onnx` is Module 1's static export of the Ridge/DictVectorizer
+baseline (a single `ai.onnx.ml.LinearRegressor` node) -- not the current production
+XGBoost model, since Step 1's training DAG has no ONNX export task (the same gap
+already named as CAT 1 Problem 4 in Step 3). That matters for how the numbers below
+should be read: "eager" (XGBoost) and "ONNX Runtime / OpenVINO" (Ridge) are two
+different model families, not two runtimes of identical weights.
+
+A second, smaller gotcha: OpenVINO's ONNX frontend has no conversion rule for
+`ai.onnx.ml.LinearRegressor` at all -- it only understands the standard
+neural-network op set, so `ov.convert_model()` fails outright on the raw export.
+This isn't specific to this model; the same wall applies to any scikit-learn/XGBoost
+ONNX export, since skl2onnx/onnxmltools always emit `ai.onnx.ml` ops. The fix:
+`scripts/convert_onnx_for_openvino.py` pulls the linear model's `coefficients`/
+`intercepts` straight off the node and rewrites it as one standard `Gemm` op
+(`Y = X*W^T + b`) -- mathematically identical, verified to match the original to
+within 0.000275 on 20 random rows -- and *that* graph is what OpenVINO converts.
+
+The current DictVectorizer also now produces 3322 features against the ONNX
+model's fixed 3326 (vocabulary drift since Module 1); 4 features were zero-padded
+to align shapes for the ONNX Runtime and OpenVINO runs.
+
+**Results** (200 repeats over 180 real trip rows):
+
+| Runtime | ms/call | us/row | Speedup vs eager |
+|---|---|---|---|
+| Eager (XGBoost) | 1.464 | 8.13 | 1.0x (baseline) |
+| ONNX Runtime (graph-optimized, `ORT_ENABLE_ALL`) | 0.248 | 1.38 | 5.89x |
+| OpenVINO (CPU device) | 0.550 | 3.05 | 2.66x |
+
+**Accuracy delta.** The one same-weights comparison this setup allows: ONNX
+Runtime vs OpenVINO both running the identical rewritten Ridge weights
+(`model_std.onnx`) -- max abs diff 0.000004, mean 0.000000. Converting the graph
+to OpenVINO IR and running it through the CPU plugin doesn't measurably change
+predictions. Eager vs ONNX Runtime shows a large gap (max abs diff 115.9, mean
+18.2), but that's the Ridge-vs-XGBoost model-family difference from the setup
+note above, not a runtime-conversion accuracy delta -- reporting it as "ONNX
+Runtime is 18 minutes off" would be a wrong reading of the number.
+
+**Execution provider.** ONNX Runtime used `CPUExecutionProvider` -- the only
+real option on this machine (`get_available_providers()` returns
+`['AzureExecutionProvider', 'CPUExecutionProvider']`). On other hardware,
+`CUDAExecutionProvider`/`TensorrtExecutionProvider` (NVIDIA GPU),
+`OpenVINOExecutionProvider` (ORT's own EP wrapping OpenVINO instead of calling it
+natively), `DmlExecutionProvider` (Windows DirectML), and `CoreMLExecutionProvider`
+(Apple Silicon) are the alternatives. OpenVINO ran on its `CPU` device plugin
+(`Core().available_devices` returns `['CPU']` here); on supported Intel hardware
+the `GPU` and `NPU` plugins are the alternatives, plus the `AUTO`/`MULTI`/`HETERO`
+meta-devices that pick or split work across whichever of those are present.
+
+**Reading the speedup honestly: OpenVINO didn't win.** ONNX Runtime (5.89x) beat
+OpenVINO (2.66x) against the eager baseline here, which cuts against the usual
+"OpenVINO is the faster CPU runtime" assumption. The likely reason is the model
+itself: a single 3326-wide `Gemm` op processing 180 rows has essentially no graph
+for OpenVINO's kernel fusion, SIMD-tuned kernels, or INT8 quantization to work on
+-- its own IR-loading and dispatch overhead ends up dominating a computation this
+trivial. OpenVINO's advantages are built for larger, deeper graphs (CNNs,
+transformers); a linear regressor this small isn't where it's supposed to shine,
+and the honest result here reflects that rather than a runtime bug.
+
+### CAT 5: vLLM (LLM track, required for final project Track B)
+
+**Setup.** This machine has no NVIDIA GPU (confirmed: `nvidia-smi` isn't available
+inside WSL and doesn't auto-appear via passthrough the way it would if an NVIDIA
+driver were active -- Windows Task Manager confirms no NVIDIA GPU is present).
+vLLM's value proposition here is specifically its GPU scheduler, so per the
+course's own prerequisite note for GPU-dependent steps, this was run as a
+notebook exercise on Google Colab's free Tesla T4 tier (16GB VRAM) instead of
+locally -- the same documented workaround the course allows for Step 7a. The
+reproducible script is `scripts/benchmark_cat5_vllm.py`.
+
+Served **Qwen2.5-1.5B-Instruct** via `vllm serve`, queried through the standard
+OpenAI-compatible `/v1/chat/completions` endpoint with `stream=True` -- the same
+client code you'd point at any hosted LLM API. TTFT and inter-token latency were
+measured at 1, 5, and 20 concurrent requests, rotating across 8 varied prompts
+per run (not the same prompt repeated, for the same reason Step 8's load test
+avoids identical payloads -- caching would lie).
+
+**Results:**
+
+| Concurrency | Requests | TTFT mean | TTFT p50 | TTFT p95 | Inter-token mean | Inter-token p95 | Throughput |
+|---|---|---|---|---|---|---|---|
+| 1 | 10 | 63.2 ms | 39.8 ms | 163.9 ms | 15.13 ms | 17.44 ms | 0.64 req/s |
+| 5 | 15 | 68.9 ms | 67.4 ms | 85.5 ms | 16.54 ms | 16.72 ms | 2.92 req/s |
+| 20 | 60 | 1731.4 ms | 249.4 ms | 4852.5 ms | 21.04 ms | 21.59 ms | 5.20 req/s |
+
+**What this shows.** Throughput scales ~8x (0.64 -> 5.20 req/s) from concurrency
+1 to 20, while inter-token latency -- the time between successive generated
+tokens once a request is underway -- barely moves (15.1ms -> 21.0ms). That gap is
+continuous batching doing its job: the GPU isn't serving one request at a time
+and queueing the rest, it's packing whichever requests are currently mid-generation
+into the same decode step, so 20x the concurrent load costs almost nothing in
+per-token speed.
+
+TTFT tells a different, more honest story worth calling out rather than averaging
+away: at concurrency 20, mean TTFT (1731ms) is nearly 7x its own p50 (249ms), and
+p95 balloons to 4852ms. That's a queueing effect, not a regression in the engine
+-- all 60 requests in that run were fired at once (`asyncio.gather`, a burst
+arrival pattern, not a steady one), so a chunk of them genuinely wait behind
+in-flight prefill work for a scheduler slot before their own first token comes
+back. The split between a fast, stable p50 and a heavy-tailed mean/p95 is exactly
+what you'd expect: most requests get scheduled quickly, a minority queue behind
+the burst. A steadier real-world arrival rate (a Poisson process instead of a
+simultaneous burst) would very likely show a tighter TTFT distribution at the
+same concurrency -- worth flagging as a limitation of this specific benchmark's
+arrival pattern, not a limitation of vLLM.
+
+**PagedAttention, continuous batching, and the KV cache, in plain terms:**
+
+The **KV cache** is what makes autoregressive generation tractable at all: a
+transformer recomputes attention over every prior token for each new token it
+generates, so instead of redoing that work from scratch every step, the model
+caches each token's key/value projections the first time they're computed and
+reuses them for every later step. It's essential, but it also grows linearly
+with sequence length and gets duplicated per concurrent request -- which is
+exactly the memory-pressure problem the next two ideas solve.
+
+**PagedAttention** borrows the idea of OS-style virtual memory paging for that
+KV cache. Naively, each sequence's cache needs one contiguous block of GPU memory
+sized for the worst-case sequence length, which wastes memory on every sequence
+shorter than the max and fragments the GPU as sequences of different lengths
+start and finish at different times. PagedAttention instead splits each
+sequence's cache into small fixed-size blocks that don't need to sit next to
+each other in memory, with a lookup table mapping each sequence to its physical
+blocks -- so memory is allocated just-in-time as a sequence grows, freed
+instantly when it finishes, and can even be shared between sequences with a
+common prefix (like the same system prompt). That's what lets a fixed amount of
+GPU memory hold far more concurrent sequences than a naive contiguous allocator.
+
+**Continuous batching** (a.k.a. in-flight batching) is the scheduling half of
+the same idea. A naive batcher collects a fixed group of requests, runs them all
+in lockstep, and can't start the next group until every sequence in the current
+one finishes -- so a short request sits blocked behind whatever the longest
+sequence in its batch happens to be. Continuous batching schedules at the level
+of a single decode step instead of a whole request: at every step, newly-arrived
+requests get folded into the running batch and finished ones drop out, so the
+GPU is always doing useful work for whatever's currently active, and no request
+waits behind another's *entire* generation -- only behind momentary scheduling
+contention, which is exactly what the concurrency-20 TTFT tail above is showing.
+
+**Why a FastAPI-plus-transformers loop cannot compete.** A hand-rolled service
+calling `model.generate()` from `transformers` has no per-step scheduler --
+it processes one request (or one manually-assembled static batch) at a time, and
+Python's GIL (already demonstrated as CAT 1 Problem 2 in Step 3) blocks true
+concurrent request handling within a worker regardless. Even with manual
+batching, `transformers`' default generate loop holds every sequence's KV cache
+in one static, padded tensor sized for the whole batch -- so throughput is
+capped by the batch's slowest sequence and memory is wasted on padding for the
+shorter ones. Run the concurrency sweep above against a FastAPI+transformers
+loop and inter-token latency would scale up roughly linearly with concurrency,
+because each additional concurrent request mostly serializes behind the others
+instead of being packed into the same batched forward pass the way vLLM's
+engine packs them. The 15ms-to-21ms inter-token latency across a 20x concurrency
+increase in the table above *is* that difference, measured.

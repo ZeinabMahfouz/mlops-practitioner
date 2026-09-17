@@ -1,1 +1,4 @@
 /model.pkl
+/model_std.onnx
+/model.optimized.onnx
+/openvino_ir/
