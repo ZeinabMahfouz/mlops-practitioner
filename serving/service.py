@@ -38,3 +38,25 @@ class RideDurationService:
         X_dense = X.toarray().astype(np.float32) if hasattr(X, "toarray") else X
         pred = await self.model.to_async.predict(X_dense)
         return {"prediction": float(pred[0])}
+
+    @bentoml.api
+    async def predict_batch(self, trips: list[dict]) -> dict:
+        dicts = [
+            {
+                "PU_DO": f"{t['PULocationID']}_{t['DOLocationID']}",
+                "trip_distance": t["trip_distance"],
+            }
+            for t in trips
+        ]
+        X = self.dv.transform(dicts)
+        X_dense = X.toarray().astype(np.float32) if hasattr(X, "toarray") else X
+        preds = await self.model.to_async.predict(X_dense)
+        return {"predictions": [float(p) for p in preds], "batch_size": len(preds)}
+
+    @bentoml.api
+    def metadata(self) -> dict:
+        return {
+            "model_tag": str(self.bento_model.tag),
+            "framework": "xgboost",
+            "runner_workers": "cpu_count",
+        }

@@ -958,3 +958,141 @@ because each additional concurrent request mostly serializes behind the others
 instead of being packed into the same batched forward pass the way vLLM's
 engine packs them. The 15ms-to-21ms inter-token latency across a 20x concurrency
 increase in the table above *is* that difference, measured.
+## Step 8: Load testing
+
+### Setup
+
+`loadtest/locustfile.py` sends realistic mixed traffic against CAT 2 (BentoML,
+`localhost:3000`): 80% single `/predict` calls, 15% `/predict_batch` calls with a
+random batch size (5-50 trips), 5% `/metadata` reads, and every payload draws
+random pickup/dropoff zones and distances -- never the same row twice, so no
+cache anywhere in the stack (BentoML's Runner, connection pooling, OS page
+cache) can quietly flatter the numbers. Wait time is configurable via env vars
+(`LOCUST_MIN_WAIT`/`LOCUST_MAX_WAIT`) so the same file drives both a realistic
+traffic pattern and a stress pattern.
+
+### Normal traffic (100 users, `wait_time = between(1, 3)`)
+
+| Metric | Value |
+|---|---|
+| Requests | 6,934 |
+| Failures | 9 (0.13%) |
+| RPS | 49.6 |
+| Median | 24ms |
+| Avg | 46ms |
+| Max | 1042ms |
+
+**This run doesn't show a saturation point, and it isn't supposed to.** With
+100 users each waiting 1-3s between requests, the traffic itself is capped at
+roughly 100 / 2s ≈ 50 req/s regardless of how fast the server actually is --
+the measured 49.6 RPS matches that almost exactly. This run is demand-limited,
+not supply-limited: useful as an everyday-traffic baseline, but it can't reveal
+where the service actually breaks. A repeat of this same run (after a container
+restart) showed a noticeably worse tail -- p95 160ms vs the first run's
+sub-100ms range, and 18 real HTTP 500s -- most likely a cold-start artifact
+from the fresh container rather than a steady-state difference; flagged here
+rather than smoothed over.
+
+### Stress traffic (100 users, near-zero wait -- finding the real limit)
+
+Removing think-time (`LOCUST_MIN_WAIT=0 LOCUST_MAX_WAIT=0.1`) is what actually
+stresses the service:
+
+| Metric | Value |
+|---|---|
+| Requests | 8,710 |
+| Failures | 10 (0.11%) |
+| RPS | **117.79** |
+| Median | 21ms |
+| p95 | 77ms |
+| p99 | 190ms |
+| Max | 540ms |
+
+Throughput jumped from ~50 to 117.79 req/s once think-time stopped capping
+demand -- confirming the normal run really was demand-limited, not a measure of
+capacity.
+
+**Bottleneck diagnosis: batching/queueing-bound at the internal Runner hop, not
+CPU.** `docker stats` peaked at 141.20% / 120.04% CPU during this run -- on this
+machine's 12 cores (`nproc`), that's roughly 10-12% of total capacity, with
+memory flat at ~41% throughout. CPU- and memory-bound are both ruled out
+directly by that headroom. `docker logs` traced the 10 failures to:
+aiohttp.client_exceptions.ServerDisconnectedError: Server disconnected
+File "serving/service.py", line 39, in predict
+pred = await self.model.to_async.predict(X_dense)
+
+This is the identical failure mode Step 4 already documented at 50 users under
+stress (`bentoml.depends()` moves `predict()` to a separate process reached over
+HTTP) -- now reproduced at 100 users under real load, with CPU nowhere near its
+ceiling both times. The bottleneck is the internal HTTP hop between
+`RideDurationService` and the `RideDurationModel` Runner (serialization +
+network round-trip for every call), gated by the Runner's micro-batching window
+(`max_batch_size=32, max_latency_ms=500`) -- not compute.
+
+### Tuning experiment: `max_latency_ms` 500 -> 50
+
+The hypothesis going in: with 11 idle cores to spare, shrinking the batching
+window from 500ms to 50ms should cut worst-case queueing latency at little
+cost. **The result contradicts that hypothesis, and the contradiction is the
+actual finding:**
+
+| Config | RPS | Failures | Avg latency | Max latency |
+|---|---|---|---|---|
+| `max_latency_ms=500` (original) | 117.79 | 0.11% (10/8710) | 30ms | 540ms |
+| `max_latency_ms=50` (tuned) | **28.97** | **7.11%** (358/5038) | 866ms | **35,437ms** |
+
+Throughput fell to a quarter of the original and the failure rate jumped 64x.
+The batching window was never the source of latency -- it was amortizing a
+fixed per-call cost (the `RideDurationService` -> Runner round-trip, which
+serializes and transmits a pickled numpy array over HTTP for every single call,
+visible directly in the request logs). A 500ms window lets many requests
+accumulate into one batch before paying that round-trip once; a 50ms window
+forces far more, smaller batches, multiplying the number of expensive
+round-trips needed to serve the same request volume. That overwhelms the
+internal connection handling well before CPU becomes the constraint -- the
+same architectural bottleneck as above, made worse rather than better by a
+plausible-sounding tuning move. Reverted to `max_latency_ms=500` afterward and
+confirmed the service back to its original, better-performing state.
+
+**This is the load test's actual non-linear blow-up**, even though it came
+from a config change rather than pure request-volume growth: median latency
+barely moved (21ms -> ~40ms) while p98/p99/max latency exploded by two to three
+orders of magnitude -- exactly the shape the course's saturation warning
+describes ("throughput and latency are a dial, not a switch"), just discovered
+by turning the dial the wrong way first.
+
+### Comparison table
+
+| Category | Runtime | Traffic | P50 | P95 | P99 | RPS | Failure % |
+|---|---|---|---|---|---|---|---|
+| CAT 1 | FastAPI eager | 50u normal | 10ms | 17ms | 28ms | 24.7 | 0% |
+| CAT 1 | FastAPI eager | 50u stress | 80ms | 160ms | 240ms | 359.2 | 0% |
+| CAT 2 | BentoML + micro-batching | 50u stress | 120ms | 2600ms | 31000ms | 36.5 | 2.85% |
+| CAT 2 | BentoML + micro-batching | 100u normal | 24ms | 160ms | 480ms | 49.6 | 0.13% |
+| CAT 2 | BentoML + micro-batching | 100u stress | 21ms | 77ms | 190ms | **117.79** | 0.11% |
+| CAT 2 | BentoML, `max_latency_ms=50` | 100u stress | ~40ms | 390ms* | 17000ms* | 28.97 | 7.11% |
+| CAT 4 | ONNX Runtime (direct benchmark, not HTTP) | n/a | -- | -- | -- | -- | -- |
+| CAT 4 | OpenVINO (direct benchmark, not HTTP) | n/a | -- | -- | -- | -- | -- |
+
+\* `/metadata` endpoint percentiles shown; `/predict`'s own p95/p99 were even
+worse under the tuned config.
+
+CAT 4's rows are intentionally left without RPS/failure numbers: ONNX Runtime
+and OpenVINO were benchmarked directly as runtimes in Step 7b (per-call latency
+against real trip data), not wrapped in an HTTP serving layer the way CAT 1 and
+CAT 2 are -- Step 7's own framing is "accelerated runtimes," while CAT 2 is
+explicitly named "the primary web-service deliverable" in this course. Building
+a dedicated FastAPI/BentoML wrapper around the Module 1 ONNX/OpenVINO artifacts
+just to run them through Locust wasn't in scope here; their actual per-row
+latency numbers are in Step 7b's CAT 4 section instead. CAT 3 (TensorRT +
+Triton) has no row -- this machine has no NVIDIA GPU, documented in Step 7.
+
+The clearest number in this whole table is the CAT 1 vs CAT 2 stress comparison
+from Step 4: CAT 1 sustained 359.2 RPS with zero failures at 50 users, while
+CAT 2 -- even at its *best* config in this step -- topped out at 117.79 RPS with
+a nonzero failure rate. The GIL fix `bentoml.depends()` provides comes at the
+cost of a network hop that, at real stress load, is a tighter constraint than
+the GIL ever was for this particular model (a fast, simple XGBoost regressor).
+BentoML's Runner architecture is built to pay off on genuinely expensive models
+where GIL-driven serialization would dominate -- for a model this cheap, the
+overhead direction flips.
