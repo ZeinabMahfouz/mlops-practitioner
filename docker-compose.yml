@@ -25,7 +25,15 @@ services:
     volumes:
       - miniodata:/data
     restart: unless-stopped
-
+  redis:
+    image: redis:7-alpine
+    container_name: redis_streams
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped  
+  
   mlflow:
     build:
       context: .
@@ -35,6 +43,7 @@ services:
     depends_on:
       - postgres
       - minio
+      - redis
     ports:
       - "5000:5000"
     environment:
@@ -157,3 +166,4 @@ volumes:
   miniodata:
   airflow_pgdata:
   airflow_logs:
+  redisdata:

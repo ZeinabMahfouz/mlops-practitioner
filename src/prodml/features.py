@@ -23,14 +23,14 @@ if __name__ == "__main__":
     output_dir = Path(sys.argv[2])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # قراءة بيانات التدريب والاختبار من مجلد prepared
+    # read the input data
     train_df = pd.read_parquet(input_dir / "train.parquet")
     test_df = pd.read_parquet(input_dir / "test.parquet")
 
-    # تطبيق هندسة الميزات
+    # feature engineering
     train_df = engineer_features(train_df)
     test_df = engineer_features(test_df)
 
-    # حفظ المخرجات في مجلد features
+    # save the processed data to the output directory
     train_df.to_parquet(output_dir / "train.parquet")
     test_df.to_parquet(output_dir / "test.parquet")

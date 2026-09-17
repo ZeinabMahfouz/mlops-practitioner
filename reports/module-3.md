@@ -696,3 +696,107 @@ its real throughput ceiling instead narrows the gap to ~218x, much closer to
 that expected order of magnitude -- the remaining difference is explained by
 batch's much larger effective chunk size versus CAT 1 still serving one row
 per HTTP request even under load.
+## Step 6: Streaming inference
+
+### Design
+
+Redis was added to Compose as a lightweight message broker. There's no live
+GPS/trip-completion feed for this project, so `scripts/stream_producer.py`
+simulates one by replaying real historical trips from
+`data/raw/green_tripdata_2024-02.parquet` onto a Redis Stream (`trip_events`)
+one event at a time, at a configurable rate. Each event carries a
+`produced_at` epoch timestamp so end-to-end latency can be measured, not
+just model inference time. Because `engineer_features` computes its target
+from both pickup *and* dropoff timestamps, each simulated event includes
+both -- a simplification worth naming: a truly live system would only have
+the pickup time at booking and would need a duration model trained without
+the dropoff-derived target.
+
+`src/prodml/stream_consumer.py` reads from `trip_events` via a Redis
+consumer group (`scoring_group`), scores each event against the same
+`models/model.pkl` artifact CAT 1, CAT 2, and batch scoring all use, and
+publishes predictions to an output stream (`trip_predictions`).
+
+What makes streaming hard, and how each was implemented:
+
+- **Consumer groups for parallelism.** Multiple consumer processes
+  (`c1`, `c2`, ...) register under the same group and share the stream --
+  each message is delivered to exactly one consumer in the group, not
+  broadcast to all of them.
+- **XACK acknowledgement.** A message only leaves the group's pending
+  entries list (PEL) once it has been durably handled -- scored and
+  published, or dead-lettered. An unacknowledged message stays claimed by
+  whichever consumer read it.
+- **At-least-once delivery.** Before reading new messages, each consumer
+  calls `XAUTOCLAIM` to reclaim anything left in the PEL past an idle
+  threshold (30s) -- work abandoned by a crashed or stalled consumer gets
+  picked up and retried rather than silently lost.
+- **A dead-letter stream** (`trip_events_dlq`) for poison messages, with two
+  distinct causes: a malformed field that can never parse (e.g. a
+  non-numeric `trip_distance`), and an event that fails
+  `engineer_features`' own validation (duration or distance out of its
+  sane range). Both are permanent failures -- retrying won't fix them -- so
+  they're dead-lettered immediately rather than burning through retry
+  attempts.
+
+One implementation wrinkle worth documenting: `redis-py`'s blocking
+`XREADGROUP`/`XAUTOCLAIM` calls intermittently raised a client-side socket
+timeout instead of returning empty when no messages were available --
+reproduced directly, not assumed. The consumer wraps both calls and treats
+that as "no new messages this cycle" rather than a fatal error, which is
+the correct behavior for a production consumer regardless of root cause:
+transient client/network hiccups should never crash a long-running
+consumer process.
+
+### Results
+
+**End-to-end latency** (event produced -> prediction published), measured
+with a single consumer running concurrently with the producer at 20
+events/sec, 200 events total:
+
+| Metric | Value |
+|---|---|
+| Events scored | 173 |
+| Events dead-lettered | 27 (8 injected malformed, 19 real trips failing validation) |
+| Mean latency | 584.3 ms |
+| p50 latency | 433.4 ms |
+| p95 latency | 1459.1 ms |
+| Max latency | 1542.7 ms |
+
+**Consumer-group parallelism**: 400 events were produced while two
+consumers (`c1`, `c2`) were both running against the same group. Both
+finished with `XPENDING` showing 0 pending entries for each -- confirming
+the stream was split between them and every message each one claimed was
+durably completed, not left stuck.
+
+**At-least-once delivery / crash recovery**: a "crashed" consumer was
+simulated by manually reading 3 messages as `ghost_consumer` via
+`XREADGROUP` and never acknowledging them -- `XPENDING` confirmed all 3
+stuck in the PEL under that name. After the 30-second idle threshold, a
+real consumer (`rescuer`) was started: `XAUTOCLAIM` reclaimed all 3
+messages, scored 2 and dead-lettered 1 (failed validation), and
+`XPENDING` returned empty -- proving abandoned work is recovered rather
+than lost.
+
+### Kafka vs. Redis Streams
+
+For this workload -- a single logical consumer group scoring ride-duration
+events, already running alongside a small Redis instance used nowhere else
+at scale -- **Redis Streams is the right choice**. It needed no new
+infrastructure, and its consumer-group primitives (`XREADGROUP`, `XACK`,
+`XAUTOCLAIM`) directly provide the parallelism, acknowledgement, and
+at-least-once semantics this pipeline needs, with far less operational
+overhead than running a Kafka cluster (brokers, ZooKeeper/KRaft,
+partition management) for a workload this size.
+
+Kafka would become the right choice if this pipeline outgrew a single
+Redis node: if multiple independent teams needed their own consumer groups
+replaying the *same* event history (Kafka's log-based retention is built
+for durable replay across many independent readers, where Redis Streams
+is closer to a queue that's typically trimmed), if throughput needed to
+scale horizontally across partitions and brokers beyond what one Redis
+instance can hold in memory, or if the system needed to retain months of
+trip events for reprocessing or backtesting a new model. None of those
+apply here yet, so Redis Streams is the pragmatic choice for the current
+scale, with Kafka as the clear next step if the workload grows into those
+requirements.
